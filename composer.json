@@ -1,0 +1,27 @@
+{
+    "name": "sibidharan/zealphp-project",
+    "type": "project",
+    "description": "A simple project to demonstrate the usage of ZealPHP",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "Sibidharan\\ZealphpProject\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Sibidharan",
+            "email": "sibidharan@icloud.com"
+        }
+    ],
+    "minimum-stability": "dev",
+    "require": {
+        "sibidharan/zealphp": "dev-master"
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "~/zealphp"
+        }
+    ]
+}
