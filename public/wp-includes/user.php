@@ -39,6 +39,7 @@
  * @return WP_User|WP_Error WP_User on success, WP_Error on failure.
  */
 function wp_signon( $credentials = array(), $secure_cookie = '' ) {
+	\ZealPHP\elog("wp_signon(): enter","wordpress");
 	global $auth_secure_cookie, $wpdb;
 
 	if ( empty( $credentials ) ) {
@@ -302,6 +303,9 @@ function wp_authenticate_email_password( $user, $email, $password ) {
  * @return WP_User|WP_Error WP_User on success, WP_Error on failure.
  */
 function wp_authenticate_cookie( $user, $username, $password ) {
+	$bt = debug_backtrace(DEBUG_BACKTRACE_PROVIDE_OBJECT, 1);
+    $caller = array_shift($bt);
+	\ZealPHP\elog("wp_authenticate_cookie(): called by $caller[file]:$caller[line]");
 	global $auth_secure_cookie;
 
 	if ( $user instanceof WP_User ) {
@@ -311,7 +315,10 @@ function wp_authenticate_cookie( $user, $username, $password ) {
 	if ( empty( $username ) && empty( $password ) ) {
 		$user_id = wp_validate_auth_cookie();
 		if ( $user_id ) {
+			\ZealPHP\elog("wp_authenticate_cookie(): constructing WP_User($user_id)");
 			return new WP_User( $user_id );
+		} else {
+			\ZealPHP\elog("wp_authenticate_cookie(): not user id: $user_id");
 		}
 
 		if ( $auth_secure_cookie ) {
@@ -555,6 +562,7 @@ function wp_authenticate_spam_check( $user ) {
  *                   an earlier filter callback is received, that value is returned.
  */
 function wp_validate_logged_in_cookie( $user_id ) {
+	\ZealPHP\elog("wp_validate_logged_in_cookie(): $user_id","wordpress");
 	if ( $user_id ) {
 		return $user_id;
 	}
@@ -3647,7 +3655,7 @@ function wp_get_users_with_no_role( $site_id = null ) {
  */
 function _wp_get_current_user() {
 	global $current_user;
-
+	\ZealPHP\elog("_wp_get_current_user(): ","wordpress");
 	if ( ! empty( $current_user ) ) {
 		if ( $current_user instanceof WP_User ) {
 			return $current_user;

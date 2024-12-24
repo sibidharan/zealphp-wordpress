@@ -691,6 +691,10 @@ if ( ! function_exists( 'wp_validate_auth_cookie' ) ) :
 	 * @return int|false User ID if valid cookie, false if invalid.
 	 */
 	function wp_validate_auth_cookie( $cookie = '', $scheme = '' ) {
+		$bt = debug_backtrace(DEBUG_BACKTRACE_PROVIDE_OBJECT, 1);
+		$caller = array_shift($bt);
+		\ZealPHP\elog("wp_validate_auth_cookie(): called by $caller[file]:$caller[line]", "wordpress");
+		// \ZealPHP\elog("wp_validate_auth_cookie() enter", "wordpress");
 		$cookie_elements = wp_parse_auth_cookie( $cookie, $scheme );
 		if ( ! $cookie_elements ) {
 			/**
@@ -702,7 +706,7 @@ if ( ! function_exists( 'wp_validate_auth_cookie' ) ) :
 			 * @param string $scheme Authentication scheme. Values include 'auth', 'secure_auth',
 			 *                       or 'logged_in'.
 			 */
-			\ZealPHP\elog("Auth cookie malformed $cookie $scheme", "wordpress");
+			\ZealPHP\elog("Auth cookie malformed: ".var_export($_COOKIE, true), "wordpress");
 			do_action( 'auth_cookie_malformed', $cookie, $scheme );
 			return false;
 		}
@@ -714,6 +718,8 @@ if ( ! function_exists( 'wp_validate_auth_cookie' ) ) :
 		$expired    = $cookie_elements['expiration'];
 		$expiration = $cookie_elements['expiration'];
 
+		\ZealPHP\elog("wp_validate_auth_cookie(): parsed cookie: $scheme $username $hmac $token $expired $expiration");
+
 		// Allow a grace period for POST and Ajax requests.
 		if ( wp_doing_ajax() || 'POST' === $_SERVER['REQUEST_METHOD'] ) {
 			$expired += HOUR_IN_SECONDS;
@@ -721,6 +727,7 @@ if ( ! function_exists( 'wp_validate_auth_cookie' ) ) :
 
 		// Quick check to see if an honest cookie has expired.
 		if ( $expired < time() ) {
+			\ZealPHP\elog("wp_validate_auth_cookie(): honest cookie has expired");
 			/**
 			 * Fires once an authentication cookie has expired.
 			 *
@@ -739,6 +746,8 @@ if ( ! function_exists( 'wp_validate_auth_cookie' ) ) :
 			 */
 			do_action( 'auth_cookie_expired', $cookie_elements );
 			return false;
+		} else {
+			\ZealPHP\elog("wp_validate_auth_cookie(): cookie passed expiry test");
 		}
 
 		$user = get_user_by( 'login', $username );
@@ -760,7 +769,10 @@ if ( ! function_exists( 'wp_validate_auth_cookie' ) ) :
 			 * }
 			 */
 			do_action( 'auth_cookie_bad_username', $cookie_elements );
+			\ZealPHP\elog("wp_validate_auth_cookie(): get_by_user validation failed, auth_cookie_bad_username fired");
 			return false;
+		} else {
+			\ZealPHP\elog("wp_validate_auth_cookie(): get_by_user validation passed");
 		}
 
 		$pass_frag = substr( $user->user_pass, 8, 4 );
@@ -789,7 +801,10 @@ if ( ! function_exists( 'wp_validate_auth_cookie' ) ) :
 			 * }
 			 */
 			do_action( 'auth_cookie_bad_hash', $cookie_elements );
+			\ZealPHP\elog("wp_validate_auth_cookie(): hash_equals validation failed, auth_cookie_bad_hash fired");
 			return false;
+		} else {
+			\ZealPHP\elog("wp_validate_auth_cookie(): hash_equals validation passed");
 		}
 
 		$manager = WP_Session_Tokens::get_instance( $user->ID );
@@ -810,8 +825,11 @@ if ( ! function_exists( 'wp_validate_auth_cookie' ) ) :
 			 *     @type string $scheme     The cookie scheme to use.
 			 * }
 			 */
+			\ZealPHP\elog("wp_validate_auth_cookie(): WP_Session_Token::verify validation failed, auth_cookie_bad_session_token fired");
 			do_action( 'auth_cookie_bad_session_token', $cookie_elements );
 			return false;
+		} else {
+			\ZealPHP\elog("wp_validate_auth_cookie(): WP_Session_Token::verify validation passed");
 		}
 
 		// Ajax/POST grace period set above.
@@ -835,6 +853,7 @@ if ( ! function_exists( 'wp_validate_auth_cookie' ) ) :
 		 * }
 		 * @param WP_User  $user            User object.
 		 */
+		\ZealPHP\elog("wp_validate_auth_cookie(): cookie has been validated, firing auth_cookie_valid for ".$user->ID);
 		do_action( 'auth_cookie_valid', $cookie_elements, $user );
 
 		return $user->ID;
@@ -914,8 +933,9 @@ if ( ! function_exists( 'wp_parse_auth_cookie' ) ) :
 	 * }
 	 */
 	function wp_parse_auth_cookie( $cookie = '', $scheme = '' ) {
+		\ZealPHP\elog("wp_parse_auth_cookie() enter", "wordpress");
 		if ( empty( $cookie ) ) {
-			\ZealPHP\elog("Empty cookie case checking $scheme", "wordpress");
+			\ZealPHP\elog("Empty cookie case checking, scheme: $scheme", "wordpress");
 			switch ( $scheme ) {
 				case 'auth':
 					$cookie_name = AUTH_COOKIE;
@@ -941,12 +961,15 @@ if ( ! function_exists( 'wp_parse_auth_cookie' ) ) :
 				return false;
 			}
 			$cookie = $_COOKIE[ $cookie_name ];
+			// \ZealPHP\elog("Cookies: ".var_export($_COOKIE, true));
 		}
 
-		\ZealPHP\elog("Break loop $cookie", "wordpress");
+		\ZealPHP\elog("WP Auth Cookie Found: $cookie", "wordpress");
 		$cookie_elements = explode( '|', $cookie );
 		if ( count( $cookie_elements ) !== 4 ) {
 			return false;
+		} else {
+			\ZealPHP\elog("Cookie elements parsed", "wordpress");
 		}
 
 		list( $username, $expiration, $token, $hmac ) = $cookie_elements;
@@ -1215,7 +1238,6 @@ if ( ! function_exists( 'auth_redirect' ) ) :
 		$scheme = apply_filters( 'auth_redirect_scheme', '' );
 
 		$user_id = wp_validate_auth_cookie( '', $scheme );
-		\ZealPHP\elog("Trying to authenticate: $user_id","wordpress");
 		if ( $user_id ) {
 			/**
 			 * Fires before the authentication redirect.

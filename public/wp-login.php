@@ -1346,7 +1346,7 @@ switch ( $action ) {
 		}
 
 		$requested_redirect_to = isset( $_REQUEST['redirect_to'] ) && is_string( $_REQUEST['redirect_to'] ) ? $_REQUEST['redirect_to'] : '';
-
+		\ZealPHP\elog("wp-login: requested_redirect_to check $requested_redirect_to","wordpress");
 		/**
 		 * Filters the login redirect URL.
 		 *
