@@ -1,0 +1,293 @@
+<?php
+namespace ZealPHP\Tests\Unit;
+
+use PHPUnit\Framework\TestCase;
+use ZealPHP\App;
+
+/**
+ * Unit coverage for the pure mod_php superglobal-parity helpers (issues
+ * #304/#306/#307):
+ *
+ *  - App::normalizeUploadedFiles()      — index-major → field-major $_FILES + full_path (#304)
+ *  - App::synthesizeRequestServerVars() — QUERY_STRING / CONTENT_* + HTTP Basic/Digest auth (#306/#307)
+ *
+ * Both are pure static functions of their input, so they're tested directly
+ * without booting a server. ($_COOKIE treat-data parity (#305) and the
+ * REQUEST_URI-with-query parity (#306) are a separate change — they need a
+ * global OpenSwoole config flip + a query-safe dispatch layer respectively.)
+ */
+class SuperglobalParityUnitTest extends TestCase
+{
+    // ---- #304: normalizeUploadedFiles -------------------------------------
+
+    public function testSingleFileGainsFullPathKey(): void
+    {
+        $in = ['file' => [
+            'name'     => 'a.txt',
+            'type'     => 'text/plain',
+            'tmp_name' => '/tmp/x',
+            'error'    => 0,
+            'size'     => 3,
+        ]];
+        $out = App::normalizeUploadedFiles($in);
+        $this->assertSame(
+            [
+                'name'      => 'a.txt',
+                'type'      => 'text/plain',
+                'tmp_name'  => '/tmp/x',
+                'error'     => 0,
+                'size'      => 3,
+                'full_path' => 'a.txt',
+            ],
+            $out['file'],
+            'single file stays flat and gains full_path defaulting to name'
+        );
+    }
+
+    public function testSingleFileKeepsProvidedFullPath(): void
+    {
+        $in = ['file' => [
+            'name'      => 'a.txt',
+            'type'      => 'text/plain',
+            'tmp_name'  => '/tmp/x',
+            'error'     => 0,
+            'size'      => 3,
+            'full_path' => 'sub/dir/a.txt',
+        ]];
+        $out = App::normalizeUploadedFiles($in);
+        $this->assertSame('sub/dir/a.txt', $out['file']['full_path']);
+    }
+
+    public function testArrayFieldIsTransposedToFieldMajor(): void
+    {
+        $in = ['files' => [
+            0 => ['name' => 'a.txt', 'type' => 'text/plain', 'tmp_name' => '/tmp/a', 'error' => 0, 'size' => 3],
+            1 => ['name' => 'b.txt', 'type' => 'text/plain', 'tmp_name' => '/tmp/b', 'error' => 0, 'size' => 4],
+        ]];
+        $out = App::normalizeUploadedFiles($in);
+        $this->assertSame(
+            [
+                'name'      => ['a.txt', 'b.txt'],
+                'type'      => ['text/plain', 'text/plain'],
+                'tmp_name'  => ['/tmp/a', '/tmp/b'],
+                'error'     => [0, 0],
+                'size'      => [3, 4],
+                'full_path' => ['a.txt', 'b.txt'],
+            ],
+            $out['files']
+        );
+        // Canonical PHP idiom must now resolve: parallel arrays keyed by index.
+        $this->assertSame('/tmp/a', $out['files']['tmp_name'][0]);
+        $this->assertSame('/tmp/b', $out['files']['tmp_name'][1]);
+    }
+
+    public function testNestedNameFieldIsTransposedRecursively(): void
+    {
+        $in = ['doc' => [
+            'main'  => ['name' => 'm.txt', 'type' => 't', 'tmp_name' => '/tmp/m', 'error' => 0, 'size' => 1],
+            'thumb' => ['name' => 'th.txt', 'type' => 't', 'tmp_name' => '/tmp/th', 'error' => 0, 'size' => 2],
+        ]];
+        $out = App::normalizeUploadedFiles($in);
+        $this->assertSame(['main' => 'm.txt', 'thumb' => 'th.txt'], $out['doc']['name']);
+        $this->assertSame(['main' => '/tmp/m', 'thumb' => '/tmp/th'], $out['doc']['tmp_name']);
+        $this->assertSame(['main' => 'm.txt', 'thumb' => 'th.txt'], $out['doc']['full_path']);
+    }
+
+    public function testNonFileEntryPassesThrough(): void
+    {
+        $out = App::normalizeUploadedFiles(['weird' => 'not-a-struct']);
+        $this->assertSame('not-a-struct', $out['weird']);
+    }
+
+    public function testEmptyFilesYieldsEmptyArray(): void
+    {
+        $this->assertSame([], App::normalizeUploadedFiles([]));
+    }
+
+    // ---- #306 + #307: synthesizeRequestServerVars -------------------------
+
+    public function testQueryStringDefaultsToEmptyWhenAbsent(): void
+    {
+        $out = App::synthesizeRequestServerVars(['REQUEST_URI' => '/s.php']);
+        $this->assertSame('', $out['QUERY_STRING']);
+    }
+
+    public function testQueryStringPreservedWhenPresent(): void
+    {
+        $out = App::synthesizeRequestServerVars(['REQUEST_URI' => '/s.php', 'QUERY_STRING' => 'x=1&y=2']);
+        $this->assertSame('x=1&y=2', $out['QUERY_STRING']);
+    }
+
+    public function testRequestUriReappendsQuery(): void
+    {
+        // #306 — REQUEST_URI carries the full mod_php value (path + ?query). The
+        // dispatch layer matches routes on a parse_url(PATH) of it, so this is safe.
+        $out = App::synthesizeRequestServerVars(['REQUEST_URI' => '/s.php', 'QUERY_STRING' => 'x=1&y=2']);
+        $this->assertSame('/s.php?x=1&y=2', $out['REQUEST_URI']);
+    }
+
+    public function testRequestUriNoQueryStaysPath(): void
+    {
+        $out = App::synthesizeRequestServerVars(['REQUEST_URI' => '/s.php']);
+        $this->assertSame('/s.php', $out['REQUEST_URI']);
+        $this->assertSame('', $out['QUERY_STRING']);
+    }
+
+    public function testRequestUriNoDoubleAppendWhenAlreadyHasQuery(): void
+    {
+        // Guard against double-append if a request_uri already embeds the query.
+        $out = App::synthesizeRequestServerVars(['REQUEST_URI' => '/s.php?x=1', 'QUERY_STRING' => 'x=1']);
+        $this->assertSame('/s.php?x=1', $out['REQUEST_URI']);
+    }
+
+    public function testRequestUriEmptyNotMalformedByQuery(): void
+    {
+        // An empty REQUEST_URI must NOT become a malformed '?query' (a query with
+        // no path) — the append guard requires a non-empty REQUEST_URI.
+        $out = App::synthesizeRequestServerVars(['REQUEST_URI' => '', 'QUERY_STRING' => 'x=1']);
+        $this->assertSame('', $out['REQUEST_URI']);
+    }
+
+    public function testContentTypeAndLengthMirroredFromHeaders(): void
+    {
+        $out = App::synthesizeRequestServerVars([
+            'REQUEST_URI'         => '/s.php',
+            'HTTP_CONTENT_TYPE'   => 'application/x-www-form-urlencoded',
+            'HTTP_CONTENT_LENGTH' => '3',
+        ]);
+        $this->assertSame('application/x-www-form-urlencoded', $out['CONTENT_TYPE']);
+        $this->assertSame('3', $out['CONTENT_LENGTH']);
+    }
+
+    public function testContentVarsAbsentWhenNoBodyHeaders(): void
+    {
+        $out = App::synthesizeRequestServerVars(['REQUEST_URI' => '/s.php']);
+        $this->assertArrayNotHasKey('CONTENT_TYPE', $out);
+        $this->assertArrayNotHasKey('CONTENT_LENGTH', $out);
+    }
+
+    public function testBasicAuthDecodedIntoPhpAuthVars(): void
+    {
+        $out = App::synthesizeRequestServerVars([
+            'REQUEST_URI'        => '/s.php',
+            'HTTP_AUTHORIZATION' => 'Basic ' . base64_encode('alice:s3cr3t'),
+        ]);
+        $this->assertSame('alice', $out['PHP_AUTH_USER']);
+        $this->assertSame('s3cr3t', $out['PHP_AUTH_PW']);
+        // AUTH_TYPE is NOT set (mod_php parity: no auth module configured).
+        $this->assertArrayNotHasKey('AUTH_TYPE', $out);
+        // HTTP_AUTHORIZATION kept (Bearer flows rely on it).
+        $this->assertArrayHasKey('HTTP_AUTHORIZATION', $out);
+    }
+
+    public function testBasicAuthPasswordMayContainColon(): void
+    {
+        $out = App::synthesizeRequestServerVars([
+            'REQUEST_URI'        => '/s.php',
+            'HTTP_AUTHORIZATION' => 'Basic ' . base64_encode('user:pa:ss'),
+        ]);
+        $this->assertSame('user', $out['PHP_AUTH_USER']);
+        $this->assertSame('pa:ss', $out['PHP_AUTH_PW']);
+    }
+
+    public function testBasicAuthCaseInsensitiveScheme(): void
+    {
+        $out = App::synthesizeRequestServerVars([
+            'REQUEST_URI'        => '/s.php',
+            'HTTP_AUTHORIZATION' => 'basic ' . base64_encode('a:b'),
+        ]);
+        $this->assertSame('a', $out['PHP_AUTH_USER']);
+        $this->assertSame('b', $out['PHP_AUTH_PW']);
+    }
+
+    public function testBasicAuthWithoutColonIsNotDecoded(): void
+    {
+        $out = App::synthesizeRequestServerVars([
+            'REQUEST_URI'        => '/s.php',
+            'HTTP_AUTHORIZATION' => 'Basic ' . base64_encode('nocolon'),
+        ]);
+        $this->assertArrayNotHasKey('PHP_AUTH_USER', $out);
+        $this->assertArrayNotHasKey('PHP_AUTH_PW', $out);
+    }
+
+    public function testDigestAuthPublishesDigestVar(): void
+    {
+        $out = App::synthesizeRequestServerVars([
+            'REQUEST_URI'        => '/s.php',
+            'HTTP_AUTHORIZATION' => 'Digest username="alice", realm="x"',
+        ]);
+        $this->assertSame('username="alice", realm="x"', $out['PHP_AUTH_DIGEST']);
+        $this->assertArrayNotHasKey('AUTH_TYPE', $out);
+    }
+
+    public function testNoAuthHeaderLeavesAuthVarsUnset(): void
+    {
+        $out = App::synthesizeRequestServerVars(['REQUEST_URI' => '/s.php']);
+        $this->assertArrayNotHasKey('PHP_AUTH_USER', $out);
+        $this->assertArrayNotHasKey('AUTH_TYPE', $out);
+    }
+
+    // ---- #305: parseCookieHeader (the exact #305 table) -------------------
+
+    public function testCookieArraySyntaxBuildsList(): void
+    {
+        $this->assertSame(['arr' => ['x', 'y']], App::parseCookieHeader('arr[]=x; arr[]=y'));
+    }
+
+    public function testCookieMapSyntaxBuildsAssoc(): void
+    {
+        $this->assertSame(['map' => ['k' => 'v']], App::parseCookieHeader('map[k]=v'));
+    }
+
+    public function testCookieNameDotMangledToUnderscore(): void
+    {
+        $this->assertSame(['a_b' => '1'], App::parseCookieHeader('a.b=1'));
+    }
+
+    public function testCookiePlusIsLiteralNotSpace(): void
+    {
+        // RFC 6265: literal '+' is preserved (NOT form-urlencoded +→space) —
+        // the value-corruption case for base64/JWT cookies.
+        $this->assertSame(['plus' => 'a+b'], App::parseCookieHeader('plus=a+b'));
+    }
+
+    public function testCookieCombinedHeaderMatchesAppleToApple(): void
+    {
+        // The full #305 reproduction header, in one go.
+        $this->assertSame(
+            ['arr' => ['x', 'y'], 'map' => ['k' => 'v'], 'a_b' => '1', 'plus' => 'a+b'],
+            App::parseCookieHeader('arr[]=x; arr[]=y; map[k]=v; a.b=1; plus=a+b')
+        );
+    }
+
+    public function testCookieValuePercentDecodedPerRfc6265(): void
+    {
+        // %2B decodes to '+' (a base64/JWT value survives intact).
+        $this->assertSame(['v' => 'a+b'], App::parseCookieHeader('v=a%2Bb'));
+    }
+
+    public function testCookieValueWithEqualsAndAmpersandPreserved(): void
+    {
+        // '=' and '&' inside a value must not break parsing.
+        $this->assertSame(['t' => 'a=b&c'], App::parseCookieHeader('t=a=b&c'));
+    }
+
+    public function testCookieEmptyHeaderYieldsEmptyArray(): void
+    {
+        $this->assertSame([], App::parseCookieHeader(''));
+        $this->assertSame([], App::parseCookieHeader('   '));
+    }
+
+    public function testCookieBareFlagSegmentSkipped(): void
+    {
+        // A `; secure`-style segment with no '=' has no value to bind.
+        $this->assertSame(['a' => '1'], App::parseCookieHeader('a=1; secure'));
+    }
+
+    public function testCookieLeadingSpaceAfterSemicolonStripped(): void
+    {
+        // Cookie pairs are space-separated after ';'; the name's leading space
+        // must be stripped (PHP behaviour), not folded into the key.
+        $this->assertSame(['a' => '1', 'b' => '2'], App::parseCookieHeader('a=1; b=2'));
+    }
+}

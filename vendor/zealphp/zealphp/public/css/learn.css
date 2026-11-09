@@ -1,0 +1,913 @@
+/* /learn — layout, sidebar, lesson components, chat, notes */
+
+/* scroll: global smooth removed from zealphp.css; htmx show: is now instant */
+
+.learn-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 2.5rem;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+@media (max-width: 900px) {
+  .learn-layout { grid-template-columns: 1fr; padding: 1rem; }
+}
+
+/* Sidebar */
+.learn-sidebar-toggle-input { display: none; }
+.learn-sidebar-toggle-btn {
+  display: none; padding: .5rem .8rem; border: 1px solid #d6d3d1; border-radius: 6px;
+  font-size: .85rem; cursor: pointer; background: #fff; margin-bottom: .75rem;
+}
+@media (max-width: 900px) { .learn-sidebar-toggle-btn { display: inline-block; } }
+
+/* ============================================================
+ * Modern unified sidebar — Linear / Vercel / Stripe aesthetic
+ *
+ * Every lesson is a single pill-shaped row. The ACTIVE lesson auto-
+ * expands underneath it to show that page's h2 sub-headings as a
+ * smooth-scroll outline. Inactive lessons stay collapsed. No manual
+ * chevron, no <details> — the active state IS the expand state.
+ *
+ * The substep list is injected client-side by /js/learn.js after every
+ * htmx swap, so this CSS only styles what's rendered, never controls it.
+ * ============================================================ */
+
+.learn-sidebar {
+  position: sticky; top: 1.5rem; align-self: start;
+  max-height: calc(100vh - 3rem); overflow-y: auto;
+  padding: .25rem .25rem .25rem 0;
+  scrollbar-width: thin;
+}
+@media (max-width: 900px) {
+  .learn-sidebar { display: none; position: static; }
+  .learn-sidebar-toggle-input:checked ~ .learn-sidebar { display: block; }
+}
+.learn-sidebar-inner { padding: .5rem 0 1rem; }
+
+/* Group label */
+.learn-sidebar-group + .learn-sidebar-group { margin-top: 1.4rem; }
+.learn-sidebar-group-title {
+  font-size: .66rem; text-transform: uppercase; letter-spacing: .12em;
+  color: #78716c; font-weight: 700;
+  margin: 0 0 .35rem;
+  padding: 0 .85rem;
+}
+
+.learn-sidebar-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column;
+}
+/* Each row is a 2-col grid: [tiny mono number] [pill link]. */
+.learn-sidebar-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.75rem 1fr;
+  align-items: start;
+  margin: 1px 0;
+}
+/* Leading-zero monospace numerals — quiet, right-aligned. */
+.learn-sidebar-item::before {
+  content: attr(data-num);
+  grid-column: 1;
+  align-self: start;
+  padding: .55rem .5rem 0 0;
+  text-align: right;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: .62rem; font-variant-numeric: tabular-nums;
+  color: #d6d3d1;
+  letter-spacing: .02em;
+  user-select: none;
+  transition: color .12s;
+}
+.learn-sidebar-item.active::before { color: var(--accent, #f59e0b); }
+
+/* Lesson row — pill-shaped, generous tap target. */
+.learn-sidebar-link {
+  grid-column: 2;
+  display: flex; align-items: center; gap: .5rem;
+  padding: .45rem .8rem;
+  color: #57534e;
+  font-size: .87rem; font-weight: 500; line-height: 1.4;
+  text-decoration: none;
+  border-radius: 7px;
+  position: relative;
+  transition: background .16s ease, color .16s ease;
+}
+.learn-sidebar-link:hover { color: #1c1917; background: #f5f5f4; text-decoration: none; }
+.learn-sidebar-link:hover .learn-sidebar-chip {
+  background: #ebe9e5; color: #44403c;
+}
+
+/* Tiny chip after the title — modern soft tag. */
+.learn-sidebar-chip {
+  margin-left: auto;
+  font-size: .58rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em;
+  padding: .1rem .4rem;
+  color: #a8a29e; background: #fafaf9;
+  border-radius: 4px;
+  transition: background .16s ease, color .16s ease;
+}
+
+/* Active item — soft amber surface, dark text, small accent dot. */
+.learn-sidebar-item.active > .learn-sidebar-link {
+  color: #1c1917;
+  font-weight: 600;
+  background: linear-gradient(180deg, #fffbeb 0%, #fef6cf 100%);
+  box-shadow: inset 0 0 0 1px #fde68a, 0 1px 2px rgba(245, 158, 11, .06);
+}
+.learn-sidebar-item.active > .learn-sidebar-link::before {
+  content: '';
+  position: absolute; left: -.25rem; top: 50%;
+  width: 3px; height: 1rem; margin-top: -.5rem;
+  border-radius: 3px;
+  background: var(--accent, #f59e0b);
+}
+.learn-sidebar-item.active .learn-sidebar-chip {
+  color: #92400e; background: #fef3c7;
+}
+
+/* ============================================================
+ * Substeps — injected by JS only into the active item.
+ * The parent .learn-sidebar-item is a 2-col grid; this list lives in
+ * the second row and spans BOTH columns so its content has full width.
+ * Indent aligns the substep text under the parent link text.
+ * ============================================================ */
+.learn-substeps {
+  grid-column: 1 / -1;
+  list-style: none; padding: 0;
+  margin: .35rem 0 .25rem 1.75rem;   /* match grid col 1 width so list
+                                         starts under the parent link */
+  position: relative;
+  animation: substepsIn .22s ease;
+}
+.learn-substeps::before {
+  content: '';
+  position: absolute;
+  left: .35rem; top: .15rem; bottom: .15rem;
+  width: 1px;
+  background: #fde68a;
+}
+.learn-substeps li { margin: 0; }
+.learn-substeps a {
+  display: block;
+  margin-left: .9rem;
+  padding: .28rem .7rem;
+  font-size: .8rem; font-weight: 400; line-height: 1.4;
+  color: #78716c;
+  text-decoration: none;
+  border-radius: 5px;
+  transition: background .14s ease, color .14s ease;
+  position: relative;
+  /* Long labels wrap normally instead of breaking per-character */
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.learn-substeps a:hover { color: #1c1917; background: #f5f5f4; text-decoration: none; }
+.learn-substeps a.current {
+  color: #b45309; font-weight: 600;
+  background: #fffbeb;
+}
+.learn-substeps a.current::before {
+  content: '';
+  position: absolute;
+  left: -.6rem; top: 50%; margin-top: -3px;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent, #f59e0b);
+  box-shadow: 0 0 0 2px #fffbeb;
+}
+
+/* "Open standalone ↗" — modern outlined link rendered as the last substep
+ * when the active lesson has a data-demo URL. */
+.learn-substep-demo a {
+  margin-top: .35rem;
+  padding: .25rem .6rem;
+  font-size: .73rem; font-weight: 500;
+  color: #78716c;
+  background: transparent;
+  border: 1px solid #e7e5e4;
+  border-radius: 5px;
+  display: inline-flex; align-items: center; gap: .3rem;
+}
+.learn-substep-demo a:hover {
+  color: #92400e; background: #fffbeb; border-color: #fde68a;
+}
+
+@keyframes substepsIn {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Lesson header */
+.lesson-header { margin-bottom: 2rem; }
+.lesson-crumb { font-size: .78rem; color: #78716c; margin-bottom: .35rem; }
+.lesson-crumb a { color: var(--accent, #f59e0b); text-decoration: none; }
+.lesson-title { font-size: 2.25rem; font-weight: 800; letter-spacing: -.03em; line-height: 1.15; margin: 0 0 .25rem; }
+.lesson-subtitle { color: #57534e; font-size: 1.05rem; margin: 0 0 1rem; }
+.lesson-subtitle--top-gap { margin-top: 1rem; }
+.lesson-chips { display: flex; gap: .6rem; margin-top: .75rem; }
+.lesson-chip { display: inline-block; padding: .35rem .8rem; border: 1px solid #e7e5e4; border-radius: 999px; font-size: .82rem; color: #44403c; text-decoration: none; background: #fff; transition: border-color .15s, color .15s; }
+.lesson-chip:hover { border-color: var(--accent, #f59e0b); color: var(--accent, #f59e0b); text-decoration: none; }
+.lesson-chip-next { margin-left: auto; }
+
+/* You will learn */
+.youwilllearn { background: #fffbeb; border-left: 4px solid var(--accent, #f59e0b); padding: 1rem 1.2rem; border-radius: 0 6px 6px 0; margin: 1.25rem 0; }
+.youwilllearn h3 { margin: 0 0 .5rem; font-size: .92rem; text-transform: uppercase; letter-spacing: .05em; color: #92400e; }
+.youwilllearn ul { margin: 0; padding-left: 1.25rem; }
+.youwilllearn li { margin: .25rem 0; font-size: .92rem; }
+
+/* Callout */
+.callout { margin: 1rem 0; padding: .9rem 1.1rem; border-radius: 6px; border-left: 4px solid #e7e5e4; background: #fafaf9; font-size: .92rem; }
+.callout-info { border-left-color: #2563eb; background: #eff6ff; }
+.callout-warn { border-left-color: #d97706; background: #fffbeb; }
+.callout-success { border-left-color: #059669; background: #ecfdf5; }
+.callout-deep { border-left-color: #7c3aed; background: #f5f3ff; }
+.callout-head { font-weight: 600; margin-bottom: .35rem; }
+.callout-icon { margin-right: .3rem; }
+
+/* Deep dive */
+.deepdive { margin: 1.25rem 0; border: 1px solid #e7e5e4; border-radius: 6px; padding: .75rem 1rem; background: #fff; }
+.deepdive summary { cursor: pointer; font-weight: 600; font-size: .92rem; color: #44403c; user-select: none; }
+.deepdive[open] summary { margin-bottom: .65rem; }
+.deepdive-icon { margin-right: .35rem; }
+
+/* Try it */
+.tryit { margin: 1.25rem 0; border: 2px solid var(--accent, #f59e0b); border-radius: 8px; overflow: hidden; }
+.tryit-head { padding: .55rem .9rem; background: #fffbeb; font-weight: 600; font-size: .88rem; color: #92400e; border-bottom: 1px solid #fde68a; }
+.tryit-icon { margin-right: .35rem; }
+.tryit-body { padding: 1rem; }
+
+/* Lesson body */
+.lesson-content { min-width: 0; }
+.lesson-content h2 { margin-top: 2.25rem; margin-left: 0; font-size: 1.55rem; font-weight: 700; letter-spacing: -.02em; }
+.lesson-content h3 { margin-top: 1.5rem; margin-left: 0; font-size: 1.15rem; font-weight: 700; }
+.lesson-content p { line-height: 1.65; color: #292524; }
+.lesson-content ol, .lesson-content ul { padding-left: 1.5rem; margin: 0.75rem 0; }
+.lesson-content ol li, .lesson-content ul li { padding-left: 0.25rem; }
+.lesson-content code { background: #f5f5f4; padding: .1rem .35rem; border-radius: 3px; font-size: .92em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.lesson-content pre { background: #1c1917; color: #f5f5f4; padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: .85rem; }
+.lesson-content pre code { background: transparent; padding: 0; color: inherit; }
+.lesson-content pre.mermaid { background: #fff; color: #1c1917; border: 1px solid #e7e5e4; padding: 1.5rem 1rem; text-align: center; cursor: zoom-in; position: relative; }
+.lesson-content pre.mermaid:hover { border-color: #f59e0b; }
+.lesson-content pre.mermaid::after { content: "Click to expand"; position: absolute; top: .5rem; right: .65rem; font-size: .65rem; color: #a8a29e; background: #fff; padding: .1rem .4rem; border-radius: 3px; opacity: 0; transition: opacity .15s; pointer-events: none; }
+.lesson-content pre.mermaid:hover::after { opacity: 1; }
+
+/* Mermaid pop-out viewer */
+.mermaid-viewer { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.85); cursor: grab; overflow: hidden; }
+.mermaid-viewer:active { cursor: grabbing; }
+.mermaid-viewer-inner { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
+.mermaid-viewer-inner svg { max-width: none !important; max-height: none !important; filter: drop-shadow(0 4px 24px rgba(0,0,0,.3)); }
+.mermaid-viewer-close { position: fixed; top: 1rem; right: 1.5rem; z-index: 10000; background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.3); color: #fff; width: 2.5rem; height: 2.5rem; border-radius: 50%; font-size: 1.2rem; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+.mermaid-viewer-close:hover { background: rgba(255,255,255,.3); }
+.mermaid-viewer-hint { position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%); z-index: 10000; color: rgba(255,255,255,.6); font-size: .75rem; pointer-events: none; }
+
+/* Notes user bar */
+.notes-user-bar {
+  display: flex; align-items: center; gap: .6rem;
+  padding: .65rem .9rem; margin-bottom: 1rem;
+  background: #fafaf9; border: 1px solid #e7e5e4; border-radius: 8px;
+}
+.notes-user-avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 2rem; height: 2rem; border-radius: 50%;
+  background: var(--accent, #f59e0b); color: #fff; font-weight: 700; font-size: .85rem;
+}
+.notes-user-name { font-weight: 600; font-size: .92rem; color: #1c1917; }
+.notes-user-logout { margin-left: auto; font-size: .78rem; color: #78716c; text-decoration: none; }
+.notes-user-logout:hover { color: #b91c1c; }
+
+/* Notes app */
+.notes-app { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+.notes-list { display: flex; flex-direction: column; gap: .75rem; }
+.note { border: 1px solid #e7e5e4; border-radius: 6px; padding: .85rem 1rem; background: #fff; }
+.note-title { margin: 0 0 .35rem; font-size: 1rem; font-weight: 600; }
+.note-body { margin: 0; color: #44403c; font-size: .92rem; white-space: pre-wrap; }
+.note-meta { font-size: .72rem; color: #78716c; margin-top: .5rem; display: flex; gap: .5rem; align-items: center; }
+.note-meta button { background: transparent; border: 1px solid #e7e5e4; color: #b91c1c; padding: .15rem .55rem; border-radius: 4px; font-size: .72rem; cursor: pointer; }
+.note-meta button:hover { background: #fef2f2; border-color: #fecaca; }
+
+.note-form { display: grid; gap: .55rem; margin: 0 0 1rem; }
+.note-form input, .note-form textarea {
+  font: inherit; padding: .55rem .7rem; border: 1px solid #d6d3d1; border-radius: 6px; background: #fff;
+}
+.note-form textarea { min-height: 80px; resize: vertical; }
+.note-form button { padding: .55rem 1rem; border: 0; border-radius: 6px; background: var(--accent, #f59e0b); color: #fff; font-weight: 600; cursor: pointer; }
+
+/* Note card animations */
+.note-created {
+  animation: noteFlashIn .5s ease-out;
+  border-color: #34d399;
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, .25);
+}
+.note-updated {
+  animation: noteFlash 3s ease-out;
+}
+.note-deleting {
+  animation: noteFadeOut .35s ease-in forwards;
+}
+@keyframes noteFlashIn {
+  0% { opacity: 0; transform: translateY(-8px); border-color: #34d399; box-shadow: 0 0 0 4px rgba(52, 211, 153, .3); }
+  40% { opacity: 1; transform: translateY(0); }
+  100% { border-color: #34d399; box-shadow: 0 0 0 2px rgba(52, 211, 153, .25); }
+}
+@keyframes noteFlash {
+  0% { border-color: #34d399; box-shadow: 0 0 0 4px rgba(52, 211, 153, .35); }
+  60% { border-color: #34d399; box-shadow: 0 0 0 2px rgba(52, 211, 153, .2); }
+  100% { border-color: #e7e5e4; box-shadow: none; }
+}
+@keyframes noteFadeOut {
+  0% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(.96); max-height: 0; padding: 0; margin: 0; overflow: hidden; }
+}
+
+/* Auth */
+.auth-card { max-width: 420px; margin: 1.5rem 0; padding: 1.5rem; border: 1px solid #e7e5e4; border-radius: 8px; background: #fff; }
+.auth-card h2 { margin: 0 0 .25rem; font-size: 1.25rem; }
+.auth-card p { color: #78716c; margin: 0 0 1rem; font-size: .9rem; }
+.auth-card form { display: grid; gap: .55rem; }
+.auth-card input { padding: .55rem .7rem; border: 1px solid #d6d3d1; border-radius: 6px; font: inherit; }
+.auth-card button { padding: .55rem 1rem; border: 0; border-radius: 6px; background: var(--accent, #f59e0b); color: #fff; font-weight: 600; cursor: pointer; }
+.auth-card .auth-toggle { background: transparent; color: var(--accent, #f59e0b); border: 1px solid var(--accent, #f59e0b); }
+/* Specific enough to beat `.auth-card p` / `.lesson-content p` (both 0,1,1),
+   which otherwise repaint the swapped-in error in muted body grey. */
+.lesson-content .auth-error { color: #b91c1c; font-size: .85rem; margin-top: .5rem; font-weight: 600; }
+
+/* Chat */
+/* Chat widget — two-column: notes left, chat right */
+.chat { display: grid; grid-template-columns: 40% 1fr; gap: 1rem; align-items: stretch; }
+@media (max-width: 760px) { .chat { grid-template-columns: 1fr; } }
+
+/* The chat box: flex column, viewport-aware height */
+.chat-box {
+  border: 1px solid #e7e5e4; border-radius: 10px; background: #fff;
+  display: flex; flex-direction: column;
+  height: clamp(400px, 60vh, 700px);
+}
+
+/* Header bar */
+.chat-head {
+  padding: .6rem 1rem; border-bottom: 1px solid #e7e5e4;
+  display: flex; align-items: center; gap: .5rem;
+  font-size: .85rem; font-weight: 600; color: #44403c;
+  flex-shrink: 0;
+}
+.chat-mode { font-size: .68rem; padding: .15rem .55rem; border-radius: 999px; background: #f5f5f4; color: #78716c; font-weight: 500; }
+.chat-new { margin-left: auto; font-size: .72rem; padding: .2rem .6rem; border: 1px solid #d6d3d1; background: #fff; border-radius: 4px; cursor: pointer; }
+.chat-new:hover { background: #f5f5f4; }
+
+/* Single scrollable conversation stream */
+.chat-scroll {
+  flex: 1; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+  padding: .75rem 1rem;
+  display: flex; flex-direction: column; gap: .6rem;
+}
+/* Scoped to .chat-box so these don't leak onto the home-page chat widget
+   (.chat-widget), which shares the .chat-msg / .chat-messages class names but
+   has its own layout in zealphp.css. learn.css is loaded globally on every
+   page, so unscoped .chat-msg/.chat-messages rules would override the home
+   chat and break the user bubble + typing loader. */
+.chat-history, .chat-box .chat-messages { display: flex; flex-direction: column; gap: .6rem; }
+.learn-layout .chat-messages { min-height: 0; max-height: none; overflow-y: visible; padding: 0; }
+.chat-history:empty { display: none; }
+.chat-history:not(:empty) { border-bottom: 1px dashed #d6d3d1; padding-bottom: .6rem; }
+
+/* Bubbles */
+.chat-box .chat-msg { max-width: 85%; }
+.chat-box .chat-msg.user { align-self: flex-end; }
+.chat-box .chat-msg.assistant { align-self: flex-start; }
+.chat-bubble { padding: .6rem .85rem; border-radius: 14px; font-size: .9rem; line-height: 1.55; }
+.chat-msg.user .chat-bubble { background: var(--accent, #f59e0b); color: #fff; border-bottom-right-radius: 4px; }
+.chat-msg.assistant .chat-bubble { background: #f5f5f4; color: #1c1917; border-bottom-left-radius: 4px; }
+.chat-item { margin: .35rem 0; }
+.chat-item.text p { margin: .25rem 0; }
+.chat-item.tool { border: 1px solid #e7e5e4; border-radius: 6px; padding: .55rem .7rem; background: #fff; font-size: .82rem; }
+.chat-item.tool[data-status="running"] .tool-status::before { content: "…"; animation: chat-pulse 1.2s infinite; }
+.chat-item.tool[data-status="ok"] { border-color: #bbf7d0; background: #f0fdf4; }
+.chat-item.tool[data-status="error"] { border-color: #fecaca; background: #fef2f2; }
+.tool-head { display: flex; align-items: center; gap: .5rem; }
+.tool-name { font-family: ui-monospace, monospace; font-weight: 600; }
+.tool-status { margin-left: auto; font-size: .7rem; color: #78716c; }
+.tool-detail { margin-top: .4rem; }
+.tool-detail summary { cursor: pointer; font-size: .72rem; color: #57534e; }
+.tool-args, .tool-result { margin: .35rem 0 0; padding: .35rem .55rem; background: #fafaf9; border-radius: 4px; font-size: .72rem; white-space: pre-wrap; word-break: break-all; }
+
+@keyframes chat-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
+/* .chat-typing lives in zealphp.css — unified amber-glow loader used by
+   both the home-page chat and this lesson's AI chat widget. */
+
+.chat-form { display: flex; gap: .5rem; padding: .65rem; border-top: 1px solid #f5f5f4; }
+.chat-form input { flex: 1; padding: .55rem .7rem; border: 1px solid #d6d3d1; border-radius: 6px; font: inherit; }
+.chat-form button { padding: .55rem 1rem; border: 0; border-radius: 6px; background: var(--accent, #f59e0b); color: #fff; font-weight: 600; cursor: pointer; }
+.chat-form button:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Render-method demos */
+.render-demo { margin: .75rem 0; padding: .8rem 1rem; background: #fafaf9; border-radius: 6px; border: 1px solid #e7e5e4; }
+.render-demo h4 { margin: 0 0 .55rem; font-size: .85rem; }
+.render-demo-row { display: flex; gap: .75rem; padding: .4rem .6rem; background: #fff; border-radius: 4px; margin: .35rem 0; font-family: ui-monospace, monospace; font-size: .8rem; align-items: center; }
+.render-demo-row strong { font-family: inherit; }
+.render-demo-row time { color: #78716c; }
+
+/* Counter button (Lesson 7 try it) */
+.counter-btn { padding: .55rem 1rem; border: 1px solid var(--accent, #f59e0b); background: #fff; color: var(--accent, #f59e0b); border-radius: 6px; font-weight: 600; cursor: pointer; font-size: .92rem; }
+.counter-btn:hover { background: #fffbeb; }
+.counter-btn strong { color: #1c1917; font-size: 1.1em; }
+
+/* Empty states */
+.notes-empty, .chat-empty { color: #78716c; font-style: italic; font-size: .9rem; }
+
+/* CTA button */
+.lesson-cta { margin: 2rem 0; text-align: center; }
+.btn-cta, .btn-cta:link, .btn-cta:visited { display: inline-block; padding: .75rem 1.5rem; background: var(--accent, #f59e0b); color: #fff; border-radius: 8px; font-weight: 700; text-decoration: none; font-size: 1.05rem; }
+.btn-cta:hover, .btn-cta:focus { filter: brightness(1.1); text-decoration: none; color: #fff; }
+
+/* Concept check — inline quiz */
+.concept-check {
+  margin: 1.5rem 0; padding: 1.2rem 1.4rem;
+  border: 2px solid #c7d2fe; border-radius: 10px; background: #eef2ff;
+}
+.concept-check-q {
+  font-weight: 700; font-size: 1.05rem; margin: 0 0 .85rem; color: #1e1b4b;
+  line-height: 1.5;
+}
+.concept-check-q::before { content: "Quiz: "; font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: #6366f1; display: block; margin-bottom: .25rem; font-weight: 600; }
+.concept-check-form { display: flex; flex-direction: column; gap: .5rem; counter-reset: opt-counter; }
+.concept-check-opt {
+  text-align: left; padding: .7rem 1rem .7rem .75rem; border: 2px solid #e0e7ff; border-radius: 8px;
+  background: #fff; font: inherit; font-size: .9rem; cursor: pointer; color: #334155;
+  transition: border-color .15s, background .15s, box-shadow .15s;
+  display: flex; align-items: center; gap: .6rem; line-height: 1.4;
+}
+.concept-check-opt::before {
+  content: counter(opt-counter, upper-alpha); counter-increment: opt-counter;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.65rem; height: 1.65rem; flex-shrink: 0;
+  border-radius: 50%; background: #e0e7ff; color: #4338ca;
+  font-weight: 700; font-size: .78rem;
+}
+.concept-check-opt:hover {
+  border-color: #818cf8; background: #eef2ff; box-shadow: 0 1px 4px rgba(99,102,241,.15);
+}
+.concept-check-opt:hover::before { background: #818cf8; color: #fff; }
+.concept-check-opt:active { transform: scale(.99); }
+
+/* Event log terminal */
+.event-log-wrap { margin-top: 1rem; }
+.event-log-title {
+  margin: 0 0 .35rem; font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
+  color: #78716c; font-weight: 700;
+}
+.event-log {
+  padding: .6rem .75rem; min-height: 60px; max-height: 150px; overflow-y: auto;
+  background: #1c1917; color: #d4d4d8; border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7rem; line-height: 1.7;
+}
+.event-log:empty::after { content: "Send a message to see events flow\2026"; color: #52525b; font-style: italic; }
+.event-log-line { white-space: nowrap; }
+.event-log-time { color: #71717a; }
+.event-log-tag {
+  display: inline-block; padding: 0 .35rem; border-radius: 3px;
+  font-size: .62rem; font-weight: 700; letter-spacing: .04em; vertical-align: middle;
+}
+.event-log-tag-sse { background: #3b82f6; color: #fff; }
+.event-log-tag-ws { background: #a855f7; color: #fff; }
+.event-log-event { color: #e5e7eb; font-weight: 600; }
+.event-log-detail { color: #a1a1aa; }
+
+/* Before / After toggle */
+.before-after { margin: 1.25rem 0; border: 1px solid #e7e5e4; border-radius: 8px; overflow: hidden; }
+.ba-tabs { display: flex; border-bottom: 1px solid #e7e5e4; background: #fafaf9; }
+.ba-tab {
+  flex: 1; padding: .55rem 1rem; border: none; background: transparent;
+  font: inherit; font-size: .85rem; font-weight: 600; cursor: pointer; color: #78716c;
+  border-bottom: 2px solid transparent; transition: color .15s, border-color .15s;
+}
+.ba-tab.active { color: var(--accent, #f59e0b); border-bottom-color: var(--accent, #f59e0b); background: #fff; }
+.ba-tab:hover:not(.active) { color: #44403c; }
+.ba-panel { padding: 1rem; }
+.ba-panel.hidden { display: none; }
+
+/* Key takeaways */
+.key-takeaways { margin: 2rem 0 1.5rem; padding: 1rem 1.2rem; border-left: 4px solid #059669; background: #ecfdf5; border-radius: 0 6px 6px 0; }
+.key-takeaways h3 { margin: 0 0 .5rem; font-size: .92rem; text-transform: uppercase; letter-spacing: .05em; color: #065f46; }
+.key-takeaways ul { margin: 0; padding-left: 1.25rem; }
+.key-takeaways li { margin: .25rem 0; font-size: .92rem; color: #064e3b; }
+
+/* Challenge */
+.challenge { margin: 1.5rem 0; padding: 1.1rem 1.2rem; border: 2px dashed #d97706; border-radius: 8px; background: #fffbeb; }
+.challenge h3 { margin: 0 0 .5rem; font-size: 1rem; color: #92400e; }
+.challenge-body { font-size: .92rem; color: #451a03; }
+.challenge-body p { margin: .35rem 0; }
+.challenge-hint { margin-top: .65rem; }
+.challenge-hint summary { cursor: pointer; font-size: .85rem; color: #78716c; font-weight: 500; }
+.challenge-hint p { margin: .35rem 0 0; font-size: .85rem; color: #57534e; }
+
+/* ---------- Demo viewer (themed /demo/view/* pages) ---------- */
+.demo-viewer { max-width: 880px; margin: 0 auto; padding: 1.5rem 1.5rem 4rem; }
+.demo-viewer-crumb { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; padding: .7rem 1rem; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; margin-bottom: 1.75rem; font-size: .9rem; }
+.demo-viewer-crumb a { color: #b45309; text-decoration: none; font-weight: 600; }
+.demo-viewer-crumb a:hover { text-decoration: underline; }
+.demo-viewer-crumb span { color: #92400e; opacity: .5; }
+.demo-viewer-crumb strong { color: #92400e; }
+.demo-viewer-title { font-size: 1.85rem; margin: 0 0 .6rem; letter-spacing: -.01em; color: #1c1917; }
+.demo-viewer-desc { color: #57534e; font-size: 1rem; margin: 0 0 1.75rem; line-height: 1.6; }
+.demo-viewer-h { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #78716c; margin: 1.5rem 0 .55rem; }
+
+.inject-case-body--solo { grid-template-columns: 1fr !important; }
+.inject-case-body--solo .demo-code { border-right: none; }
+
+/* Demo payload (JSON / response body) */
+pre.demo-payload { background: #1c1917; color: #f5f5f4; padding: .9rem 1rem; border-radius: 8px; overflow-x: auto; font-family: var(--font-mono); font-size: .82rem; line-height: 1.55; margin: 0; white-space: pre-wrap; word-break: break-word; }
+code.demo-inline { background: var(--bg-alt); padding: .1rem .35rem; border-radius: 3px; font-size: .85em; font-family: var(--font-mono); }
+
+/* Status badges (200 OK / 301 / 404 / etc.) */
+.demo-status { display: inline-block; padding: .12rem .55rem; border-radius: 3px; font-size: .75rem; font-weight: 700; color: #fff; font-family: var(--font-mono); }
+.demo-status.s2xx { background: #16a34a; }
+.demo-status.s3xx { background: #3b82f6; }
+.demo-status.s4xx,
+.demo-status.s5xx { background: #dc2626; }
+
+/* Key-value list inside demo sections */
+.demo-kv { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; font-family: var(--font-mono); font-size: .82rem; margin: 0 0 .5rem; }
+.demo-kv dt { color: #a8a29e; font-weight: 600; }
+.demo-kv dd { margin: 0; color: #1c1917; word-break: break-word; }
+
+/* Buttons inside demo viewer (Run / Connect / Disconnect) */
+.demo-action-btn { padding: .5rem 1.1rem; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #1c1917; font-weight: 600; font-size: .88rem; cursor: pointer; font-family: inherit; }
+.demo-action-btn:hover { background: #fbbf24; }
+.demo-action-btn.ghost { background: transparent; color: #78716c; border-color: var(--border); }
+
+/* Live output panels (SSR chunks, SSE events) */
+.demo-live-output { margin-top: .85rem; font-family: var(--font-mono); font-size: .82rem; padding: .85rem 1rem; background: #1c1917; color: #f5f5f4; border-radius: 8px; min-height: 90px; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.demo-live-output .ev { padding: .15rem 0; border-bottom: 1px solid #292524; }
+.demo-live-output .ev:last-child { border-bottom: 0; }
+.demo-live-output .ts { color: #a8a29e; margin-right: .5rem; }
+.demo-live-output .open  { color: #34d399; }
+.demo-live-output .tick  { color: #fbbf24; }
+.demo-live-output .done  { color: #a78bfa; }
+.demo-live-output .err   { color: #f87171; }
+
+/* ---------- WebSocket cross-tab counter demo ---------- */
+.ws-counter-card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; text-align: center; margin: 1.5rem 0; }
+.ws-counter-value { font-size: 4rem; font-weight: 700; color: var(--accent); line-height: 1; font-variant-numeric: tabular-nums; display: inline-block; transition: color .15s; }
+.ws-counter-value.flash { animation: ws-counter-flash .55s ease-out; }
+@keyframes ws-counter-flash { 0% { color: #16a34a; transform: scale(1.2); } 100% { color: var(--accent); transform: scale(1); } }
+.ws-counter-label { color: #78716c; font-size: .85rem; margin: .35rem 0 1.25rem; }
+.ws-counter-actions { display: flex; gap: .65rem; justify-content: center; }
+.ws-counter-status { display: inline-block; padding: .15rem .55rem; border-radius: 3px; font-size: .73rem; font-weight: 600; margin-top: 1rem; }
+.ws-counter-status.connecting { background: #fef3c7; color: #92400e; }
+.ws-counter-status.open       { background: #d1fae5; color: #065f46; }
+.ws-counter-status.closed     { background: #fee2e2; color: #991b1b; }
+.ws-counter-status.err        { background: #fee2e2; color: #991b1b; }
+
+/* ---------- Inline protocol badges (in running prose) ---------- */
+.proto-badge { display: inline-block; padding: 0 .3rem; border-radius: 3px; font-size: .75rem; font-weight: 700; color: #fff; font-family: var(--font-mono); }
+.proto-badge.sse { background: #3b82f6; }
+.proto-badge.ws  { background: #a855f7; }
+
+/* ---------- Components-lesson render-methods preview table ---------- */
+.preview-table { width: 100%; border-collapse: collapse; margin: .75rem 0; font-size: .88rem; }
+.preview-table thead tr { border-bottom: 2px solid #e7e5e4; }
+.preview-table thead th { padding: .5rem; text-align: left; font-weight: 600; }
+.preview-table tbody tr { border-bottom: 1px solid #f5f5f4; }
+.preview-table tbody tr:last-child { border-bottom: 0; }
+.preview-table td { padding: .5rem; }
+
+.chat-h { margin-top: 0; }
+
+/* Demo viewer crumb extends the lesson-crumb style with extra spacing
+ * and a close-pill anchored to the right. */
+.demo-viewer-crumb { display: flex; align-items: center; flex-wrap: wrap; gap: .2rem; padding: .7rem 1rem; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; margin-bottom: 1.75rem; font-size: .9rem; color: #92400e; }
+.demo-viewer-crumb span { color: #92400e; font-weight: 600; }
+.demo-viewer-crumb .demo-viewer-close { margin-left: auto; color: #b45309; font-weight: 600; font-size: .82rem; padding: .2rem .65rem; border: 1px solid #fcd34d; border-radius: 999px; background: #fef3c7; }
+.demo-viewer-crumb .demo-viewer-close:hover { background: #fde68a; text-decoration: none; }
+
+/* ---------- Build-the-App sidebar: manual numbering + collapsible details ----------
+ *
+ * The existing `Foundations` / `Hello World` groups use a plain `<ol>` whose
+ * automatic counter renders the number as the <li> marker outside the content
+ * box. That works when each <li> is one inline line of text. The Build-the-App
+ * group breaks that pattern: each item is a <details>/<summary> with a flex
+ * row inside (number + chevron + link + chip), and below that the expanded
+ * body with step list. The auto marker landed on its own line above the
+ * <details>, breaking the layout.
+ *
+ * Solution: emit the number inside the <summary> as a normal flex child,
+ * skip the <ol> wrapper entirely (use <ul list-style: none>), and let
+ * flexbox align number + chevron + link + chip on one tidy row.
+ */
+
+/* ---------- Tic-tac-toe widget ----------
+ *
+ * Refined design: the board is the hero. Player chips sit at the corners.
+ * Status is a slim pill above the board. Card framing is minimal so the
+ * widget composes equally well inside a lesson body and inside the standalone
+ * /demo/view/tictactoe/play shell.
+ */
+.ttt { display: flex; flex-direction: column; gap: .85rem; margin: 1.5rem 0; }
+
+/* Join form — minimalist. One input row + checkbox + button. No padded card
+ * with a heading; it's a step in the flow, not a "Sign in" panel. */
+.ttt-join {
+  background: #fff;
+  border: 1px solid var(--border, #e7e5e4);
+  border-radius: 10px;
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: .7rem;
+  max-width: 440px;
+}
+.ttt-join[hidden], .ttt-stage[hidden] { display: none; }
+.ttt-label { display: flex; flex-direction: column; gap: .35rem; font-size: .78rem; font-weight: 600; color: #57534e; text-transform: uppercase; letter-spacing: .04em; }
+.ttt-label input {
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  padding: .55rem .7rem;
+  border: 1px solid var(--border, #e7e5e4);
+  border-radius: 6px;
+  background: #fafaf9;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #1c1917;
+  transition: border-color .12s, background .12s;
+}
+.ttt-label input::placeholder { color: #a8a29e; }
+.ttt-label input:focus {
+  outline: none;
+  border-color: var(--accent, #f59e0b);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, .15);
+}
+.ttt-view-toggle {
+  display: inline-flex; align-items: center; gap: .45rem;
+  font-size: .82rem; color: #57534e;
+  cursor: pointer;
+  user-select: none;
+}
+.ttt-view-toggle input { accent-color: var(--accent, #f59e0b); }
+.ttt-join .btn-primary {
+  align-self: flex-start;
+  padding: .5rem 1.2rem;
+  border-radius: 6px;
+  font-size: .9rem;
+}
+.ttt-hint { font-size: .76rem; color: #a8a29e; margin: 0; line-height: 1.4; }
+
+/* Stage — the live game surface. */
+.ttt-stage {
+  background: #fff;
+  border: 1px solid var(--border, #e7e5e4);
+  border-radius: 10px;
+  padding: 1rem 1.25rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .85rem;
+  box-shadow: 0 1px 3px rgba(28, 25, 23, .04);
+}
+
+/* Top row: room badge on left, "You are X" on right. */
+.ttt-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .75rem;
+  width: 100%;
+  flex-wrap: wrap;
+  font-size: .8rem;
+  color: #78716c;
+  padding-bottom: .65rem;
+  border-bottom: 1px solid #f5f5f4;
+}
+.ttt-room-name {
+  background: #fef3c7;
+  color: #92400e;
+  padding: .15rem .55rem;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: .82rem;
+  font-weight: 600;
+}
+.ttt-you { display: flex; align-items: center; gap: .4rem; }
+
+/* Symbol chips — X is rose, O is blue, spectator is stone. The chip is the
+ * dominant visual cue for who's who; we lean into saturation. */
+.ttt-symbol-chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 1.7rem; height: 1.7rem; padding: 0 .5rem;
+  border-radius: 5px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  font-size: .95rem;
+  background: #f5f5f4; color: #57534e;
+}
+.ttt-symbol-chip.ttt-symbol-x { background: #fee2e2; color: #b91c1c; }
+.ttt-symbol-chip.ttt-symbol-o { background: #dbeafe; color: #1d4ed8; }
+.ttt-symbol-chip.ttt-symbol-s {
+  background: #f3e8ff; color: #6d28d9;
+  font-size: .72rem;
+}
+
+/* Player pair: two seats side-by-side, name + online indicator. */
+.ttt-players {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .65rem;
+  width: 100%;
+}
+.ttt-player {
+  display: flex; align-items: center; gap: .5rem;
+  padding: .35rem .55rem;
+  background: #fafaf9;
+  border: 1px solid #f5f5f4;
+  border-radius: 6px;
+  font-size: .88rem;
+  min-width: 0;
+}
+.ttt-player-name {
+  font-weight: 600;
+  color: #1c1917;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ttt-player-status {
+  font-size: .65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: .1rem .45rem;
+  border-radius: 3px;
+  background: #fee2e2;
+  color: #991b1b;
+  flex-shrink: 0;
+}
+.ttt-player-status.online {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+/* Status pill — single source of "what should I do right now" guidance. */
+.ttt-status {
+  font-size: .85rem;
+  font-weight: 600;
+  padding: .3rem .9rem;
+  border-radius: 999px;
+  background: #f5f5f4;
+  color: #44403c;
+  letter-spacing: .005em;
+}
+.ttt-status.connecting, .ttt-status.waiting { background: #fef3c7; color: #92400e; }
+.ttt-status.your-turn { background: #d1fae5; color: #065f46; font-weight: 700; }
+.ttt-status.their-turn { background: #dbeafe; color: #1e40af; }
+.ttt-status.spectating { background: #f3e8ff; color: #6d28d9; }
+.ttt-status.win { background: linear-gradient(135deg, #fef3c7, #fde68a); color: #92400e; font-weight: 700; box-shadow: 0 1px 3px rgba(245, 158, 11, .25); }
+.ttt-status.draw { background: #e7e5e4; color: #44403c; }
+.ttt-status.err, .ttt-status.closed { background: #fee2e2; color: #991b1b; }
+
+/* Scoreboard — sits above the board. X | O score with draws aside.
+ * Numbers flash amber when a count changes via .ttt-score-flash. */
+.ttt-scoreboard {
+  display: inline-flex; align-items: center; gap: .55rem;
+  padding: .35rem .85rem;
+  background: #fff;
+  border: 1px solid #e7e5e4;
+  border-radius: 999px;
+  font-size: .9rem;
+  color: #44403c;
+}
+.ttt-score-cell { display: inline-flex; align-items: center; gap: .35rem; }
+.ttt-score-num {
+  display: inline-block; min-width: 1.1rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700; font-size: 1rem;
+  text-align: center;
+  transition: color .12s;
+}
+.ttt-score-sep { color: #a8a29e; font-size: .75rem; text-transform: uppercase; letter-spacing: .1em; }
+.ttt-score-draws { margin-left: .35rem; padding-left: .65rem; border-left: 1px solid #e7e5e4; font-size: .78rem; color: #78716c; }
+.ttt-score-draws #ttt-score-draws { font-weight: 700; color: #44403c; font-family: var(--font-mono, ui-monospace, monospace); }
+@keyframes ttt-score-flash-anim {
+  0%   { color: #b91c1c; transform: scale(1.25); }
+  100% { color: inherit; transform: scale(1); }
+}
+.ttt-score-flash { animation: ttt-score-flash-anim .5s ease-out; }
+.ttt-reset-score { font-size: .82rem; }
+
+/* The board. 3×3 grid with chunky cells. Cells animate on hover/click for tactile feedback. */
+.ttt-board {
+  display: grid;
+  grid-template-columns: repeat(3, 5.6rem);
+  grid-template-rows: repeat(3, 5.6rem);
+  gap: .45rem;
+  padding: .35rem;
+  background: #f5f5f4;
+  border-radius: 10px;
+}
+@media (min-width: 600px) {
+  .ttt-board { grid-template-columns: repeat(3, 6.4rem); grid-template-rows: repeat(3, 6.4rem); }
+}
+.ttt-cell {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 2.8rem; font-weight: 800;
+  font-family: var(--font-mono);
+  background: #fff;
+  border: 2px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  color: #1c1917;
+  padding: 0;
+  transition: background .12s, border-color .12s, transform .08s, color .12s;
+}
+.ttt-cell:not(:disabled):hover {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  transform: translateY(-1px);
+}
+.ttt-cell:active:not(:disabled) {
+  transform: scale(.96);
+}
+.ttt-board[data-disabled="1"] .ttt-cell:not(.ttt-cell-filled) {
+  cursor: not-allowed; opacity: .85;
+}
+.ttt-board[data-disabled="1"] .ttt-cell:not(.ttt-cell-filled):hover {
+  background: #fff; border-color: transparent; transform: none;
+}
+.ttt-cell-x { color: #b91c1c; background: #fef2f2; }
+.ttt-cell-o { color: #1d4ed8; background: #eff6ff; }
+.ttt-cell-win {
+  background: linear-gradient(135deg, #fef3c7, #fde68a) !important;
+  border-color: #f59e0b !important;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, .35), 0 4px 12px rgba(245, 158, 11, .25);
+  animation: ttt-win-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ttt-win-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(245, 158, 11, .35), 0 4px 12px rgba(245, 158, 11, .25); }
+  50%      { box-shadow: 0 0 0 4px rgba(245, 158, 11, .5),  0 6px 16px rgba(245, 158, 11, .4); }
+}
+
+/* Footer row: reset + leave + viewer/round badges. */
+.ttt-actions {
+  display: flex; gap: .65rem; align-items: center; flex-wrap: wrap;
+  justify-content: center;
+  margin-top: .15rem;
+}
+.ttt-viewers, .ttt-rounds {
+  font-size: .72rem;
+  font-family: var(--font-mono);
+  color: #78716c;
+  padding: .15rem .5rem;
+  background: #f5f5f4;
+  border-radius: 3px;
+}
+.ttt-leave {
+  font-size: .8rem;
+  color: #78716c;
+}
+.ttt-leave:hover { color: #b91c1c; background: #fee2e2; }
+.ttt-stage .btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border, #e7e5e4);
+  color: #44403c;
+  padding: .35rem .85rem;
+  border-radius: 5px;
+  font-size: .82rem;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.ttt-stage .btn-ghost:hover {
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+
+/* "Open in new tab" CTA shared by Build-the-App lessons. */
+.lesson-popout-cta { display: inline-flex; align-items: center; gap: .35rem; padding: .4rem .8rem; background: #fef3c7; border: 1px solid #fcd34d; color: #92400e; border-radius: 999px; font-size: .82rem; font-weight: 600; text-decoration: none; margin: .85rem 0; }
+.lesson-popout-cta:hover { background: #fde68a; text-decoration: none; }
+
+/* Inline login/register card used in demo viewers when no session active. */
+.demo-login-wrap { max-width: 380px; margin: 0 auto; padding: 1.5rem; background: #fff; border: 1px solid #e7e5e4; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.04); font-family: var(--font, ui-sans-serif, system-ui); }
+/* `display: flex` overrides UA [hidden] otherwise — explicit reset. */
+.demo-login-form[hidden] { display: none !important; }
+.demo-login-intro { margin: 0 0 1rem; color: #57534e; font-size: .9rem; line-height: 1.5; }
+.demo-login-form { display: flex; flex-direction: column; gap: .75rem; }
+.demo-login-row { display: flex; flex-direction: column; gap: .25rem; font-size: .78rem; font-weight: 600; color: #57534e; text-transform: uppercase; letter-spacing: .04em; }
+.demo-login-row input { font-size: 1rem; padding: .55rem .7rem; border: 1px solid #e7e5e4; border-radius: 6px; font-family: inherit; transition: border-color .14s; }
+.demo-login-row input:focus { outline: none; border-color: var(--accent, #f59e0b); box-shadow: 0 0 0 3px rgba(245, 158, 11, .15); }
+.demo-login-actions { display: flex; align-items: center; gap: .75rem; margin-top: .25rem; flex-wrap: wrap; }
+.demo-login-btn { padding: .55rem 1.1rem; background: var(--accent, #f59e0b); color: #1c1917; border: none; border-radius: 6px; font-weight: 600; font-size: .9rem; cursor: pointer; transition: background .14s; }
+.demo-login-btn:hover:not(:disabled) { background: #d97706; color: #fff; }
+.demo-login-btn:disabled { opacity: .55; cursor: not-allowed; }
+.demo-login-toggle { background: transparent; border: none; color: #78716c; font-size: .8rem; cursor: pointer; padding: .25rem .5rem; border-radius: 4px; text-decoration: underline; }
+.demo-login-toggle:hover { color: var(--accent, #f59e0b); }
+.demo-login-msg { min-height: 1.2em; font-size: .82rem; padding: 0 .15rem; }
+.demo-login-msg.err { color: #b91c1c; background: #fef2f2; padding: .35rem .65rem; border-radius: 5px; }

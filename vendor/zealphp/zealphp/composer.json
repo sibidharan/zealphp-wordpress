@@ -1,0 +1,82 @@
+{
+    "name": "zealphp/zealphp",
+    "replace": {
+        "sibidharan/zealphp": "self.version"
+    },
+    "description": "Coroutine-native PHP framework on OpenSwoole — async HTTP, WebSocket, streaming, and real-time applications.",
+    "homepage": "https://php.zeal.ninja",
+    "keywords": [
+        "openswoole",
+        "framework",
+        "php",
+        "async",
+        "http",
+        "zealphp",
+        "coroutine",
+        "websocket",
+        "streaming",
+        "sse",
+        "real-time",
+        "middleware",
+        "psr-15",
+        "php-framework",
+        "swoole"
+    ],
+    "type": "library",
+    "license": "MIT",
+    "support": {
+        "issues": "https://github.com/sibidharan/zealphp/issues",
+        "source": "https://github.com/sibidharan/zealphp"
+    },
+    "require": {
+        "php": "^8.3",
+        "ext-openswoole": ">=22.0",
+        "openswoole/core": "^22.1.5",
+        "openswoole/ide-helper": "^22.0.1",
+        "psr/http-message": "^1.1",
+        "psr/simple-cache": "^3.0",
+        "psr/log": "^3.0",
+        "psr/http-factory": "^1.1",
+        "psr/http-client": "^1.0",
+        "league/commonmark": "^2.8"
+    },
+    "suggest": {
+        "ext-zealphp": "Recommended: per-request function overrides + per-coroutine superglobals (pie install zealphp/ext)",
+        "ext-uopz": "Legacy fallback if ext-zealphp is not available"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0",
+        "phpstan/phpstan": "^2.1",
+        "infection/infection": "^0.29 || ^0.33",
+        "predis/predis": "^2.2 || ^3.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "ZealPHP\\": "src/"
+        },
+        "files": [
+            "src/utils.php",
+            "src/Session/utils.php",
+            "src/apache_shims.php"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "ZealPHP\\Tests\\": "tests/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Sibidharan",
+            "email": "sibi@selfmade.ninja"
+        }
+    ],
+    "config": {
+        "allow-plugins": {
+            "infection/extension-installer": true,
+            "cyclonedx/cyclonedx-php-composer": false,
+            "phpdocumentor/shim": false,
+            "symfony/flex": false
+        }
+    }
+}

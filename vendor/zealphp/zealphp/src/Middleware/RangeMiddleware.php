@@ -1,0 +1,407 @@
+<?php
+namespace ZealPHP\Middleware;
+
+use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\ServerRequestInterface;
+use Psr\Http\Server\MiddlewareInterface;
+use Psr\Http\Server\RequestHandlerInterface;
+use OpenSwoole\Core\Psr\Response;
+use ZealPHP\RequestContext;
+
+/**
+ * HTTP Range Request Middleware (RFC 7233)
+ *
+ * Handles `Range: bytes=...` headers, returning `206 Partial Content` for
+ * satisfiable single and multi-range requests and `416 Range Not Satisfiable`
+ * for out-of-bounds ranges.
+ *
+ * Also adds `Accept-Ranges: bytes` to all eligible `200` responses.
+ *
+ * Only applies to `GET` responses with a non-empty body.
+ * Streaming responses and non-`200` upstream responses are passed through.
+ *
+ * Security: enforces a maximum number of range specs per request to prevent
+ * the CVE-2011-3192 class of multi-range DoS amplification attacks.
+ * Default is `200`, matching Apache's `AP_DEFAULT_MAX_RANGES`.  When the spec
+ * count exceeds the cap the `Range` header is ignored and a full `200` response
+ * is returned — the same behaviour as Apache (not a `416`).
+ *
+ * RFC 7233 §2.1 conformance: if any single spec in a multi-range header is
+ * syntactically invalid, the ENTIRE `Range` header is ignored (full `200`).
+ *
+ * RFC 7233 §3.2 — `If-Range` HTTP-date: when the `If-Range` value does not begin
+ * with a double-quote it is treated as an HTTP-date and compared against the
+ * upstream `Last-Modified` header using Apache's one-minute clock-skew rule.
+ *
+ * Usage in `app.php`:
+ *   `$app->addMiddleware(new \ZealPHP\Middleware\RangeMiddleware());`
+ *
+ * To raise or lower the per-request range cap:
+ *
+ * ```php
+ * $mw = new \ZealPHP\Middleware\RangeMiddleware();
+ * $mw->maxRanges = 50;
+ * $app->addMiddleware($mw);
+ * ```
+ */
+class RangeMiddleware implements MiddlewareInterface
+{
+    /**
+     * Maximum number of range specs accepted per request.
+     * Matches Apache's `AP_DEFAULT_MAX_RANGES` (`byterange_filter.c:59`).
+     * When exceeded the `Range` header is ignored and a full `200` is returned.
+     */
+    public int $maxRanges = 200;
+
+    public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
+    {
+        $response = $handler->handle($request);
+        $method = $request->getMethod();
+
+        if ($method !== 'GET' && $method !== 'HEAD') {
+            return $response;
+        }
+
+        if ($response->getStatusCode() !== 200) {
+            return $response;
+        }
+
+        $g = RequestContext::instance();
+        if ($g->_streaming ?? false) {
+            return $response;
+        }
+
+        $body = (string) $response->getBody();
+        if ($body === '') {
+            return $response;
+        }
+
+        // Content-Encoding guard (#235): a content-coded body (gzip/br/deflate/…)
+        // is opaque at the byte level — slicing it would hand the client a
+        // fragment of the COMPRESSED stream, which decodes to garbage (or fails
+        // outright). RFC 9110 §14.1.1 ranges are over the *selected
+        // representation's* bytes; once a coding is applied we can't honour a
+        // byte range without first decoding. Bail: serve the full body and tell
+        // the client ranges aren't available here (Accept-Ranges: none), rather
+        // than emit a corrupt 206. `identity` means "no transformation", so it's
+        // treated as no encoding.
+        $contentEncoding = strtolower(trim($response->getHeaderLine('Content-Encoding')));
+        if ($contentEncoding !== '' && $contentEncoding !== 'identity') {
+            $this->setHeader($g, 'Accept-Ranges', 'none');
+            return $response->withHeader('Accept-Ranges', 'none');
+        }
+
+        $total = strlen($body);
+
+        // Always advertise range support on eligible responses
+        $this->setHeader($g, 'Accept-Ranges', 'bytes');
+
+        $rangeHeader = $request->getHeaderLine('Range');
+        if ($rangeHeader === '') {
+            return $response->withHeader('Accept-Ranges', 'bytes');
+        }
+
+        if (!preg_match('/^bytes=(.+)$/i', $rangeHeader, $m)) {
+            return $response->withHeader('Accept-Ranges', 'bytes');
+        }
+
+        // If-Range: honour the range only when the representation has not changed.
+        // RFC 7233 §3.2: value starting with '"' is an entity-tag; anything else
+        // is an HTTP-date.  Apache ap_condition_if_range() (http_protocol.c:524-558).
+        $ifRange = $request->getHeaderLine('If-Range');
+        if ($ifRange !== '') {
+            if (str_starts_with($ifRange, '"') || str_starts_with($ifRange, 'W/"')) {
+                // ETag comparison — RFC 9110 §13.1.5 requires the STRONG function
+                // for If-Range, and §8.8.1 forbids a weak validator from
+                // authorising sub-range retrieval. If EITHER the If-Range value or
+                // the response ETag is weak (`W/`-prefixed), the validator can
+                // never satisfy If-Range → ignore the Range, serve the full body
+                // (#362). Only two non-weak, byte-identical tags honour the range.
+                $etag = $response->getHeaderLine('ETag');
+                if (str_starts_with($ifRange, 'W/') || str_starts_with($etag, 'W/')) {
+                    // Weak validator on either side — never short-circuit a Range.
+                    return $response->withHeader('Accept-Ranges', 'bytes');
+                }
+                if ($etag !== '' && $ifRange !== $etag) {
+                    // Strong ETag mismatch: ignore range, serve full body.
+                    return $response->withHeader('Accept-Ranges', 'bytes');
+                }
+                // No ETag on response or strong tags match: honour the range.
+            } else {
+                // HTTP-date comparison against Last-Modified — delegated to the
+                // single shared strong-validation helper so this buffered path
+                // and Response::sendFile()'s zero-copy path can never disagree
+                // on the same request (#258). The helper encodes Apache's 60 s
+                // clock-skew rule (a Last-Modified younger than 60 s is weak and
+                // must not short-circuit a Range).
+                $lastModifiedHeader = $response->getHeaderLine('Last-Modified');
+                if ($lastModifiedHeader === '') {
+                    // No Last-Modified available — cannot validate; serve full body.
+                    return $response->withHeader('Accept-Ranges', 'bytes');
+                }
+
+                $mtime = strtotime($lastModifiedHeader);
+                if ($mtime === false || $mtime === -1) {
+                    // Unparseable Last-Modified — cannot validate; serve full body.
+                    return $response->withHeader('Accept-Ranges', 'bytes');
+                }
+
+                // Resolve the served-time from the response Date header when
+                // present, otherwise wall clock — same source the inline code
+                // used; the helper applies the skew comparison.
+                $dateHeader = $response->getHeaderLine('Date');
+                $reqtime = ($dateHeader !== '') ? strtotime($dateHeader) : false;
+                $servedTime = ($reqtime !== false && $reqtime !== -1) ? $reqtime : null;
+
+                if (!\ZealPHP\HTTP\Response::ifRangeDateMatches($ifRange, $mtime, $servedTime)) {
+                    // Date differs, unparseable, or skew window not elapsed —
+                    // ignore the range and serve the full body.
+                    return $response->withHeader('Accept-Ranges', 'bytes');
+                }
+                // Strong match: honour range.
+            }
+        }
+
+        // C2: enforce multi-range DoS cap before allocating any range storage.
+        // Count comma-separated specs first; if over the cap serve full 200.
+        // Matches Apache byterange_filter.c:466 (AP_DEFAULT_MAX_RANGES = 200).
+        $rawSpecs = explode(',', $m[1]);
+        if (count($rawSpecs) > $this->maxRanges) {
+            return $response->withHeader('Accept-Ranges', 'bytes');
+        }
+
+        $ranges = [];
+
+        // L5: RFC 7233 §2.1 — any syntactically invalid spec invalidates the
+        // ENTIRE Range header (Apache byterange_filter.c:154-159).  We use a
+        // $valid flag so a single bad spec causes a clean full-200 return after
+        // the loop, rather than a 416.
+        $valid = true;
+
+        // Track whether the set contained ANY syntactically-valid spec. RFC 7233
+        // §2.1: byte-range-set requires ≥1 spec. A header with none at all
+        // (`bytes=,`, `bytes=,,`) is invalid → ignore → full 200 (#365), distinct
+        // from a valid spec that fell out of bounds (→ 416).
+        $sawSpec = false;
+
+        foreach ($rawSpecs as $spec) {
+            $spec = trim($spec);
+            if ($spec === '') {
+                // Empty token after trim (e.g. trailing comma, or bytes= with only
+                // whitespace).  Skip silently — no range added; if at least one
+                // VALID spec was seen the empty-$ranges check below emits 416,
+                // otherwise (#365) the header is invalid → full 200.
+                continue;
+            }
+            $sawSpec = true;
+
+            if (str_starts_with($spec, '-')) {
+                // Suffix range: bytes=-N → last N bytes
+                $tail = substr($spec, 1);
+                if ($tail === '' || !ctype_digit($tail)) {
+                    // Empty or non-numeric suffix — syntactically invalid.
+                    $valid = false;
+                    break;
+                }
+                $suffixLen = (int) $tail;
+                if ($suffixLen <= 0) {
+                    // Degenerate (bytes=-0) — skip; 416 only if it's the sole spec
+                    // (the empty-$ranges check below) (#181/#185).
+                    continue;
+                }
+                // A suffix longer than the file means "the whole representation"
+                // (RFC 7233 §2.1) — clamp the start to 0, don't 416 (#181).
+                $ranges[] = [max(0, $total - $suffixLen), $total - 1];
+            } elseif (str_ends_with($spec, '-')) {
+                // Open-end range: bytes=N-
+                $startStr = substr($spec, 0, -1);
+                if ($startStr === '' || !ctype_digit($startStr)) {
+                    $valid = false;
+                    break;
+                }
+                $start = (int) $startStr;
+                if ($start >= $total) {
+                    // Unsatisfiable spec — skip (RFC 7233 §4.4); 416 only if ALL
+                    // specs are unsatisfiable (the empty-$ranges check below) (#185).
+                    continue;
+                }
+                $ranges[] = [$start, $total - 1];
+            } elseif (str_contains($spec, '-')) {
+                // Bounded range: bytes=N-M
+                [$startStr, $endStr] = explode('-', $spec, 2);
+                if ($startStr === '' || !ctype_digit($startStr) ||
+                    $endStr === ''   || !ctype_digit($endStr)) {
+                    $valid = false;
+                    break;
+                }
+                $start = (int) $startStr;
+                $end   = (int) $endStr;
+                if ($start > $end || $start >= $total) {
+                    // Unsatisfiable spec — skip (see the §4.4 note above) (#185).
+                    continue;
+                }
+                $end = min($end, $total - 1);
+                $ranges[] = [$start, $end];
+            } else {
+                // No dash at all — syntactically invalid.
+                $valid = false;
+                break;
+            }
+        }
+
+        // L5: whole-header invalidation — serve full 200, not 416.
+        if (!$valid) {
+            return $response->withHeader('Accept-Ranges', 'bytes');
+        }
+
+        if (empty($ranges)) {
+            // #365: no valid spec at all (`bytes=,`) → invalid header → full 200;
+            // ≥1 valid spec but all out of bounds → 416.
+            if (!$sawSpec) {
+                return $response->withHeader('Accept-Ranges', 'bytes');
+            }
+            return $this->unsatisfiable($total, $g);
+        }
+
+        // C2b (#230): coalesce overlapping/adjacent specs into their union
+        // BEFORE slicing. The per-request count cap (line ~145) bounds the spec
+        // COUNT, but not the total bytes copied — N specs that each name the
+        // whole body still substr-copy N × $total bytes (the CVE-2011-3192
+        // amplification: 199 identical full-body ranges → 199 copies). Merging
+        // into disjoint unions makes the summed slice length ≤ $total, so the
+        // response can never exceed the representation size regardless of how
+        // many (duplicate/overlapping) specs the attacker sends. Mirrors
+        // Apache's byterange merge (set_byterange / merging adjacent ranges).
+        $ranges = self::coalesceRanges($ranges);
+
+        $contentType = $response->getHeaderLine('Content-Type') ?: 'application/octet-stream';
+
+        if (count($ranges) === 1) {
+            return $this->singleRange($ranges[0], $body, $total, $contentType, $g);
+        }
+
+        return $this->multiRange($ranges, $body, $total, $contentType, $g);
+    }
+
+    /**
+     * Coalesce a list of [start, end] byte ranges (inclusive) into the minimal
+     * set of disjoint ranges covering the same bytes.
+     *
+     * Sorts by start, then merges any spec that overlaps OR is immediately
+     * adjacent to the running union (`next.start <= cur.end + 1`). Because every
+     * input spec is already clamped to `[0, total-1]`, the union of the result
+     * can never exceed the representation size — this is the DoS-amplification
+     * cap (#230): Σ(end-start+1) over the coalesced ranges ≤ total, no matter how
+     * many duplicate/overlapping specs were supplied.
+     *
+     * Order is NOT preserved (the result is start-ascending) — multi-range
+     * clients receive a normalised, non-overlapping multipart body, which RFC
+     * 9110 §14.2 explicitly permits a server to produce.
+     *
+     * @param array<int, array{0: int, 1: int}> $ranges
+     * @return list<array{0: int, 1: int}>
+     */
+    private static function coalesceRanges(array $ranges): array
+    {
+        usort($ranges, static fn(array $a, array $b): int => $a[0] <=> $b[0] ?: $a[1] <=> $b[1]);
+
+        /** @var list<array{0: int, 1: int}> $merged */
+        $merged = [];
+        foreach ($ranges as [$start, $end]) {
+            if ($merged === []) {
+                $merged[] = [$start, $end];
+                continue;
+            }
+            $lastIndex = count($merged) - 1;
+            [$curStart, $curEnd] = $merged[$lastIndex];
+            // Overlapping or adjacent (touching, e.g. 0-4 and 5-9) → extend the
+            // union. +1 makes back-to-back ranges merge so the boundary byte
+            // isn't duplicated across two parts.
+            if ($start <= $curEnd + 1) {
+                $merged[$lastIndex] = [$curStart, max($curEnd, $end)];
+            } else {
+                $merged[] = [$start, $end];
+            }
+        }
+        return $merged;
+    }
+
+    /**
+     * @param array{0: int, 1: int} $range
+     */
+    private function singleRange(array $range, string $body, int $total, string $contentType, RequestContext $g): ResponseInterface
+    {
+        [$start, $end] = $range;
+        $slice  = substr($body, $start, $end - $start + 1);
+        $crHeader = "bytes {$start}-{$end}/{$total}";
+
+        // Preserve the representation's Content-Type on the 206 (#237). The
+        // upstream 200 already carried it, but constructing a fresh PSR-7
+        // Response below drops every upstream header, so re-set it here — both
+        // on the $g wrapper queue (production wire path) and the returned PSR-7
+        // response (what callers/tests read). multiRange() already does the
+        // equivalent for its multipart Content-Type; singleRange() was the gap.
+        $this->setHeader($g, 'Content-Type', $contentType);
+        $this->setHeader($g, 'Content-Range', $crHeader);
+        $this->setHeader($g, 'Content-Length', (string) strlen($slice));
+        $g->status = 206;
+
+        $resp = (new Response($slice, 206))->withHeader('Content-Type', $contentType);
+        assert($resp instanceof ResponseInterface);
+        return $resp
+            ->withHeader('Content-Range', $crHeader)
+            ->withHeader('Accept-Ranges', 'bytes');
+    }
+
+    /**
+     * @param array<int, array{0: int, 1: int}> $ranges
+     */
+    private function multiRange(array $ranges, string $body, int $total, string $contentType, RequestContext $g): ResponseInterface
+    {
+        $boundary = 'zealphp_' . bin2hex(random_bytes(16));
+        $parts    = [];
+
+        foreach ($ranges as [$start, $end]) {
+            $slice    = substr($body, $start, $end - $start + 1);
+            $parts[]  = "--{$boundary}\r\n"
+                . "Content-Type: {$contentType}\r\n"
+                . "Content-Range: bytes {$start}-{$end}/{$total}\r\n"
+                . "\r\n"
+                . $slice;
+        }
+
+        $multiBody = implode("\r\n", $parts) . "\r\n--{$boundary}--\r\n";
+        $ct        = "multipart/byteranges; boundary={$boundary}";
+
+        $this->setHeader($g, 'Content-Type', $ct);
+        $this->setHeader($g, 'Content-Length', (string) strlen($multiBody));
+        $g->status = 206;
+
+        $resp = (new Response($multiBody, 206))->withHeader('Content-Type', $ct);
+        assert($resp instanceof ResponseInterface);
+        return $resp->withHeader('Accept-Ranges', 'bytes');
+    }
+
+    private function unsatisfiable(int $total, RequestContext $g): ResponseInterface
+    {
+        $crHeader = "bytes */{$total}";
+        $this->setHeader($g, 'Content-Range', $crHeader);
+        $g->status = 416;
+
+        $resp = (new Response('', 416))
+            ->withHeader('Content-Range', $crHeader);
+        assert($resp instanceof ResponseInterface);
+        return $resp;
+    }
+
+    /**
+     * Queue a response header via the ZealPHP response wrapper (production path).
+     * Guards against `null` in unit-test contexts where `zealphp_response` is not set.
+     */
+    private function setHeader(RequestContext $g, string $key, string $value): void
+    {
+        if ($g->zealphp_response !== null) {
+            $g->zealphp_response->header($key, $value);
+        }
+    }
+}

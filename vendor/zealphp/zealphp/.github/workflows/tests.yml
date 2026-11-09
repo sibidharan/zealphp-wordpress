@@ -1,0 +1,251 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+      # composer audit — runs the CVE check against all installed dependency
+      # versions in composer.lock. Free + built-in to composer 2.4+. Catches
+      # vulnerable transitive deps that PHPStan can't see (e.g., a CVE in
+      # openswoole/core or in a psr/* package). Runs at install-time so it
+      # never reaches production. --no-dev skips dev-only deps; we want the
+      # check on dev too because CI exposure matters.
+      - name: Composer audit (CVE check)
+        # --locked audits composer.lock without a prior `composer install`.
+        # composer 2.10 made `audit` error out ("No installed packages found")
+        # instead of the old 2.9 no-op skip when nothing is installed; --locked
+        # restores the intended behaviour (CVE check against the locked deps).
+        run: composer audit --abandoned=report --locked
+
+      # Badge sync — fail fast if .github/badges/phpstan.json claims a different
+      # level than phpstan.neon. The shields.io endpoint badge in README reads
+      # that JSON, so a mismatch silently misrepresents the project's actual
+      # static-analysis posture. Cheap check; runs before any heavier job.
+      - name: Verify PHPStan badge matches phpstan.neon
+        run: |
+          set -euo pipefail
+          NEON_LEVEL=$(awk '/^[[:space:]]*level:/ {print $2; exit}' phpstan.neon | tr -d '[:space:]')
+          BADGE_LEVEL=$(python3 -c "import json,re; m=json.load(open('.github/badges/phpstan.json'))['message']; print(re.search(r'\d+', m).group())")
+          echo "phpstan.neon level: $NEON_LEVEL"
+          echo "badge JSON level:   $BADGE_LEVEL"
+          if [ "$NEON_LEVEL" != "$BADGE_LEVEL" ]; then
+            echo "::error::PHPStan badge (level $BADGE_LEVEL) does not match phpstan.neon (level $NEON_LEVEL). Update .github/badges/phpstan.json."
+            exit 1
+          fi
+
+  static-analysis:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.3'
+          extensions: openswoole, uopz, redis, memcached
+          tools: composer:v2
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Run PHPStan
+        run: vendor/bin/phpstan analyse --no-progress
+
+  phpunit:
+    name: phpunit (PHP ${{ matrix.php }})
+    runs-on: ubuntu-24.04
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - php: '8.3'
+            coverage: 'pcov'
+            upload-coverage: true
+            experimental: false
+          # 8.4 runs without coverage — Xdebug + curl interaction caused the
+          # test_chat_consecutive_requests_work flake. 8.3 is already the only
+          # Codecov uploader so no signal is lost.
+          - php: '8.4'
+            coverage: 'none'
+            upload-coverage: false
+            experimental: false
+          # 8.5 is a fully supported, REQUIRED target — openswoole/ext-zealphp
+          # build from source via shivammathur/setup-php.
+          - php: '8.5'
+            coverage: 'none'
+            upload-coverage: false
+            experimental: false
+
+    services:
+      # Redis/Valkey service for the Store/Counter Redis-backend parity tests.
+      # phpunit.xml pins ZEALPHP_REDIS_URL=redis://127.0.0.1:16379/0 — the port
+      # mapping below makes that URL resolve to this container. Tests that need
+      # Redis skip gracefully when the URL is unreachable (RedisTestCase
+      # markTestSkipped), so a missing valkey is non-fatal — but the service
+      # is wired so the CI matrix actually runs them.
+      valkey:
+        image: valkey/valkey:7-alpine
+        ports:
+          - 16379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+      # Memcached service for Store::BACKEND_MEMCACHED + Counter backend tests.
+      # phpunit.xml pins ZEALPHP_MEMCACHED_SERVERS=127.0.0.1:11211 so the
+      # tests connect here. Same graceful-skip pattern as the valkey block:
+      # tests skip when unreachable, run when the service is up.
+      memcached:
+        image: memcached:1.6-alpine
+        ports:
+          - 11211:11211
+        options: >-
+          --health-cmd "nc -z localhost 11211 || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+      # MariaDB service for the DbConnectionPool mysqli-driver tests
+      # (tests/Unit/Db/MysqliPoolTest). phpunit.xml pins ZEALPHP_TEST_MYSQL_*
+      # to root@127.0.0.1:3306 / db 'zealtest' to match this container. Same
+      # graceful-skip pattern: the tests skip when unreachable, run when up.
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: "yes"
+          MARIADB_DATABASE: zealtest
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: openswoole, uopz, redis, memcached, mysqli, pcov
+          coverage: ${{ matrix.coverage }}
+          tools: composer:v2
+
+      - name: Build openswoole from source if setup-php could not install it
+        run: |
+          if php -m | grep -q openswoole; then
+            echo "openswoole already loaded"
+            exit 0
+          fi
+          echo "openswoole missing — building from source"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev libc-ares-dev
+          tmpdir=$(mktemp -d)
+          git clone --depth 1 https://github.com/openswoole/openswoole.git "$tmpdir"
+          cd "$tmpdir"
+          phpize
+          ./configure --enable-openssl --enable-hook-curl --enable-http2 --enable-mysqlnd --enable-sockets
+          make -j"$(nproc)"
+          sudo make install
+          ini_dir=$(php -i | awk -F'=> ' '/Scan this dir for additional .ini files/ {print $2}' | head -1 | tr -d ' ')
+          echo "extension=openswoole.so" | sudo tee "${ini_dir}/30-openswoole.ini"
+          php -m | grep openswoole
+
+      - name: Build and install ext-zealphp
+        run: |
+          # Use the pinned submodule to avoid version mismatch (#140)
+          git submodule update --init ext/zealphp 2>/dev/null || git clone --depth 1 https://github.com/sibidharan/ext-zealphp.git ext/zealphp
+          cd ext/zealphp
+          phpize
+          ./configure --enable-zealphp
+          make -j"$(nproc)"
+          sudo make install
+          ini_dir=$(php -i | awk -F'=> ' '/Scan this dir for additional .ini files/ {print $2}' | head -1 | tr -d ' ')
+          echo "extension=zealphp.so" | sudo tee "${ini_dir}/50-zealphp.ini"
+          php -m | grep zealphp && echo "ext-zealphp installed"
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Start ZealPHP
+        env:
+          ZEALPHP_COMPRESSION_MIDDLEWARE: '1'
+          ZEALPHP_HTTP_COMPRESSION: '0'
+          # Don't build the /docs/api/ reference in CI: the API ref isn't
+          # needed to run tests, and an in-flight phpDocumentor build
+          # competing for CPU flakes timing-sensitive integration tests
+          # (e.g. the WebSocket ticker test on slower 8.5 runners).
+          ZEALPHP_SKIP_DOCS_BUILD: '1'
+        run: |
+          # A per-run random key enables the reactive components demo, so
+          # tests/Integration/ComponentsTest.php runs instead of skipping.
+          export ZEALPHP_APP_KEY="base64:$(php -r 'echo base64_encode(random_bytes(32));')"
+          php app.php >/tmp/zealphp-server.log 2>&1 &
+          echo $! > /tmp/zealphp-server.pid
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:8080/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Server failed to start"
+          cat /tmp/zealphp-server.log
+          exit 1
+
+      - name: Run tests (with coverage)
+        if: matrix.coverage == 'pcov'
+        env:
+          COV_PORT: '8094'
+          COVDIR: /tmp/zcov
+        run: |
+          # Multi-mode coverage harness: unit (in-process) + integration across
+          # coroutine/mixed/cgi server passes, merged. Uses pcov — xdebug
+          # segfaults inside the unit pass under OpenSwoole + uopz on PHP 8.3,
+          # which silently drops the unit.cov payload (codecov/patch then
+          # plateaus on integration-only signal).
+          # The harness starts its own servers: give them a key too, or the
+          # components demo (and component push) is disabled and never covered.
+          export ZEALPHP_APP_KEY="base64:$(php -r 'echo base64_encode(random_bytes(32));')"
+          bash scripts/coverage_full.sh
+          mkdir -p build/logs
+          cp /tmp/zcov/clover.xml build/logs/clover.xml
+
+      - name: Run tests (no coverage)
+        if: matrix.coverage == 'none'
+        run: ./vendor/bin/phpunit
+
+      - name: Upload coverage to Codecov
+        if: matrix.upload-coverage
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: build/logs/clover.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false

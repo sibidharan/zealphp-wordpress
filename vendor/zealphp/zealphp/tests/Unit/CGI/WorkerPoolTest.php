@@ -1,0 +1,538 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ZealPHP\Tests\Unit\CGI;
+
+use PHPUnit\Framework\TestCase;
+use ZealPHP\CGI\WorkerPool;
+
+/**
+ * SPIKE — End-to-end validation for the worker pool. Spawns real PHP
+ * subprocesses (not mocked) so the IPC + spawn + dispatch + recycle
+ * loop is exercised against the real entry script.
+ *
+ * NOTE: these tests do real proc_open and disk I/O. Each test creates a
+ * temporary fixture PHP file in sys_get_temp_dir() and deletes it on
+ * tearDown. Slower than pure-unit tests but the spike needs the real
+ * end-to-end roundtrip to be validated, not mocked stubs.
+ */
+final class WorkerPoolTest extends TestCase
+{
+    private string $tmpDir = '';
+
+    protected function setUp(): void
+    {
+        $this->tmpDir = sys_get_temp_dir() . '/zptest-pool-' . bin2hex(random_bytes(4));
+        mkdir($this->tmpDir, 0775, true);
+    }
+
+    protected function tearDown(): void
+    {
+        // Recursive rm of the per-test tmp dir.
+        if (!is_dir($this->tmpDir)) {
+            return;
+        }
+        $files = glob($this->tmpDir . '/*') ?: [];
+        foreach ($files as $f) {
+            @unlink($f);
+        }
+        @rmdir($this->tmpDir);
+    }
+
+    private function fixture(string $name, string $body): string
+    {
+        $path = $this->tmpDir . '/' . $name;
+        file_put_contents($path, "<?php\n" . $body);
+
+        return $path;
+    }
+
+    public function testSpawnsRequestedPoolSize(): void
+    {
+        $pool = new WorkerPool(size: 2);
+        try {
+            $this->assertSame(2, $pool->size());
+            $this->assertSame([0, 0], $pool->servedCounts());
+        } finally {
+            $pool->close();
+        }
+    }
+
+    public function testDispatchExecutesSimpleEchoFile(): void
+    {
+        $file = $this->fixture('echo.php', 'echo "ok";');
+        $pool = new WorkerPool(size: 1);
+        try {
+            $resp = $pool->dispatch(['file' => $file]);
+            $this->assertSame('ok', $resp['body']);
+            $this->assertSame(200, $resp['status']);
+        } finally {
+            $pool->close();
+        }
+    }
+
+    public function testDispatchReturnsArrayPayload(): void
+    {
+        $file = $this->fixture('json.php', 'return ["hello" => "world", "n" => 42];');
+        $pool = new WorkerPool(size: 1);
+        try {
+            $resp = $pool->dispatch(['file' => $file]);
+            $this->assertSame(['hello' => 'world', 'n' => 42], $resp['return_value']);
+        } finally {
+            $pool->close();
+        }
+    }
+
+    public function testDispatchPopulatesSuperglobalsFromRequest(): void
+    {
+        $file = $this->fixture('echo-get.php', 'echo $_GET["q"] ?? "missing";');
+        $pool = new WorkerPool(size: 1);
+        try {
+            $resp = $pool->dispatch(['file' => $file, 'get' => ['q' => 'hello']]);
+            $this->assertSame('hello', $resp['body']);
+        } finally {
+            $pool->close();
+        }
+    }
+
+    public function testDispatchFilterInputReadsSuperglobals(): void
+    {
+        // #316 — pool workers run under the CLI SAPI (empty internal request
+        // tables), so native filter_input() returns null despite populated
+        // superglobals. pool_worker.php must override it like cgi_worker.php
+        // and the main OpenSwoole worker.
+        $file = $this->fixture('filter-input.php', 'echo json_encode([
+            "get"     => filter_input(INPUT_GET, "q"),
+            "int"     => filter_input(INPUT_GET, "n", FILTER_VALIDATE_INT),
+            "missing" => filter_input(INPUT_GET, "nope"),
+            "arr"     => filter_input_array(INPUT_GET, ["n" => FILTER_VALIDATE_INT], false),
+        ]);');
+        $pool = new WorkerPool(size: 1);
+        try {
+            $resp = $pool->dispatch(['file' => $file, 'get' => ['q' => 'hello', 'n' => '7']]);
+            $out = json_decode((string) $resp['body'], true);
+            $this->assertIsArray($out, 'fixture output should be JSON, got: ' . (string) $resp['body']);
+            $this->assertSame('hello', $out['get'], 'INPUT_GET reads $_GET in pool mode (#316)');
+            $this->assertSame(7, $out['int']);
+            $this->assertNull($out['missing']);
+            $this->assertSame(['n' => 7], $out['arr']);
+        } finally {
+            $pool->close();
+        }
+    }
+
+    public function testWorkerHandlesMultipleSequentialRequests(): void
+    {
+        $file = $this->fixture('count.php', 'echo "tick";');
+        $pool = new WorkerPool(size: 1);
+        try {
+            for ($i = 0; $i < 10; $i++) {
+                $resp = $pool->dispatch(['file' => $file]);
+                $this->assertSame('tick', $resp['body'], "iter $i");
+            }
+            // Same worker handled all 10 (single-worker pool).
+            $this->assertSame([10], $pool->servedCounts());
+        } finally {
+            $pool->close();
+        }
+    }
+
+    /**
+     * FPM-style $GLOBALS cleanup contract (issue #18 follow-up).
+     *
+     * pool_worker.php snapshots $GLOBALS at boot and unsets any added keys
+     * between requests. This is THE mechanism that PHP-FPM uses at the SAPI
+     * level to prevent request-scoped globals from leaking across requests in
+     * a long-lived process. Without it, anything the first request put into
+     * `global $x` or `$GLOBALS['y']` is visible to the second request — which
+     * is exactly what breaks WordPress's `wp_did_header` sentinel pattern.
+     *
+     * This test pins the contract: a global set in request N is NOT visible
+     * in request N+1 on the same worker.
+     */
+    public function testGlobalsAreCleanedBetweenRequestsFpmStyle(): void
+    {
+        // Request 1 sets $GLOBALS['leak_canary']; request 2 probes for it.
+        $setter = $this->fixture(
+            'set-global.php',
+            '$GLOBALS["leak_canary"] = "from_request_1"; echo "set";'
+        );
+        $reader = $this->fixture(
+            'read-global.php',
+            'echo isset($GLOBALS["leak_canary"]) ? "LEAK:" . $GLOBALS["leak_canary"] : "clean";'
+        );
+        $pool = new WorkerPool(size: 1, maxRequestsPerWorker: 100);
+        try {
+            $resp1 = $pool->dispatch(['file' => $setter]);
+            $this->assertSame('set', $resp1['body'], 'request 1 should set the global');
+
+            $resp2 = $pool->dispatch(['file' => $reader]);
+            $this->assertSame(
+                'clean',
+                $resp2['body'],
+                'request 2 must NOT see request 1\'s $GLOBALS["leak_canary"] — FPM-style cleanup contract'
+            );
+
+            // Same worker handled both (single-worker pool, no recycle yet).
+            $this->assertSame([2], $pool->servedCounts());
+        } finally {
+            $pool->close();
+        }
+    }
+
+    /**
+     * The cleanup must NOT touch superglobals (the pool_worker.php
+     * reset_request_state() explicitly resets those — but the $GLOBALS
+     * cleanup loop must skip them). This test confirms a `$_GET['x']`
+     * set BY THE PARENT'S REQUEST FRAME (not by the included file)
+     * still reaches the subprocess on request N+1 after a different
+     * request N that didn't have it.
+     */
+    public function testSuperglobalsStillFlowAcrossRequestsAfterGlobalsCleanup(): void
+    {
+        $file = $this->fixture(
+            'get-probe.php',
+            'echo $_GET["q"] ?? "missing";'
+        );
+        $pool = new WorkerPool(size: 1, maxRequestsPerWorker: 100);
+        try {
+            $resp1 = $pool->dispatch(['file' => $file, 'get' => ['q' => 'first']]);
+            $this->assertSame('first', $resp1['body']);
+
+            // Request 2 with DIFFERENT GET — must see its own value, not leak from req 1.
+            $resp2 = $pool->dispatch(['file' => $file, 'get' => ['q' => 'second']]);
+            $this->assertSame('second', $resp2['body']);
+
+            // Request 3 with NO GET — must see clean (nothing leaking from req 1 or 2).
+            $resp3 = $pool->dispatch(['file' => $file]);
+            $this->assertSame('missing', $resp3['body']);
+        } finally {
+            $pool->close();
+        }
+    }
+
+    public function testWorkerCrashReturns500WithStderr(): void
+    {
+        // posix_kill(SIGKILL) kills the subprocess before it can send a
+        // response frame — exercises the stderr-capture + null-response path.
+        $file = $this->fixture('crash.php', 'posix_kill(getmypid(), 9);');
+        $pool = new WorkerPool(size: 1);
+        try {
+            $resp = $pool->dispatch(['file' => $file]);
+            $this->assertSame(500, $resp['status']);
+            $this->assertStringContainsString('response not received', $resp['body']);
+        } finally {
+            $pool->close();
+        }
+    }
+
+    public function testMissingFileReturns404(): void
+    {
+        $pool = new WorkerPool(size: 1);
+        try {
+            $resp = $pool->dispatch(['file' => '/nonexistent/file.php']);
+            $this->assertSame(404, $resp['status']);
+        } finally {
+            $pool->close();
+        }
+    }
+
+    public function testThrowingFileReturns500(): void
+    {
+        $file = $this->fixture('boom.php', 'throw new \RuntimeException("kaboom");');
+        $pool = new WorkerPool(size: 1);
+        try {
+            $resp = $pool->dispatch(['file' => $file]);
+            $this->assertSame(500, $resp['status']);
+            $this->assertIsString($resp['body']);
+            $this->assertStringContainsString('kaboom', $resp['body']);
+        } finally {
+            $pool->close();
+        }
+    }
+
+    public function testRecycleAfterMaxRequests(): void
+    {
+        $file = $this->fixture('cycle.php', 'echo getmypid();');
+        // Recycle after 2 requests — should spawn a fresh worker on the 3rd dispatch.
+        $pool = new WorkerPool(size: 1, maxRequestsPerWorker: 2);
+        try {
+            $r1 = $pool->dispatch(['file' => $file])['body'];
+            $r2 = $pool->dispatch(['file' => $file])['body'];
+            $r3 = $pool->dispatch(['file' => $file])['body'];
+
+            $this->assertSame($r1, $r2, 'r1 + r2 same worker pid');
+            $this->assertNotSame($r1, $r3, 'r3 should be a recycled worker (different pid)');
+        } finally {
+            $pool->close();
+        }
+    }
+
+    public function testInvalidSizeThrows(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        new WorkerPool(size: 0);
+    }
+
+    /**
+     * A response body containing raw binary (invalid UTF-8) can't be
+     * JSON-encoded directly. The child's IPC::writeFrame() base64-encodes it
+     * and tags `body_encoding=base64`; the parent's dispatch() must decode it
+     * back to the exact bytes — so the caller never sees the base64 wrapper.
+     */
+    public function testDispatchDecodesBase64BinaryBody(): void
+    {
+        $binary = "\xff\xfe\x00\x01 binary payload \x80\x81\x9f";
+        $file = $this->fixture(
+            'binary.php',
+            'echo ' . var_export($binary, true) . ';'
+        );
+        $pool = new WorkerPool(size: 1);
+        try {
+            $resp = $pool->dispatch(['file' => $file]);
+            $this->assertSame(200, $resp['status']);
+            $this->assertSame(
+                $binary,
+                $resp['body'],
+                'binary body must survive the base64 IPC round-trip byte-for-byte'
+            );
+        } finally {
+            $pool->close();
+        }
+    }
+
+    /**
+     * Regression for issue #108 — session data set inside one pool dispatch
+     * MUST persist to disk so a subsequent dispatch with the same PHPSESSID
+     * sees it.
+     *
+     * Pre-fix: pool_reset_request_state() nulled $_SESSION between requests
+     * WITHOUT calling session_write_close(), so PHP's native shutdown
+     * sequence never fired (the worker doesn't shut down between frames)
+     * and the session file on disk stayed empty. Reading on the next
+     * dispatch returned an empty session → "Value: EMPTY".
+     *
+     * Post-fix: pool_reset_request_state() calls session_write_close()
+     * before nulling, so request N's writes are flushed and visible to
+     * request N+1.
+     */
+    /**
+     * A client-chosen PHPSESSID the store never issued is not adopted by the
+     * subprocess: it gets session.use_strict_mode from App::$session_strict_mode
+     * (php.ini on Debian/Ubuntu ships 0).
+     */
+    public function testSubprocessRotatesAnUnissuedSessionId(): void
+    {
+        $sessDir = sys_get_temp_dir() . '/zptest-strict-' . bin2hex(random_bytes(4));
+        mkdir($sessDir, 0700, true);
+        $script = $this->fixture(
+            'strict.php',
+            'session_save_path(' . var_export($sessDir, true) . ');'
+            . ' session_start(); $_SESSION["x"] = 1; echo session_id();'
+        );
+        $pool = new WorkerPool(size: 1, maxRequestsPerWorker: 100);
+        try {
+            $r = $pool->dispatch(['file' => $script, 'cookies' => ['PHPSESSID' => 'attackerchosenid0123456789']]);
+            $this->assertNotSame('attackerchosenid0123456789', trim($r['body']));
+            $this->assertFileDoesNotExist($sessDir . '/sess_attackerchosenid0123456789');
+        } finally {
+            $pool->close();
+            foreach (glob($sessDir . '/*') ?: [] as $f) {
+                @unlink($f);
+            }
+            @rmdir($sessDir);
+        }
+    }
+
+    public function testSessionDataPersistsAcrossPoolDispatches(): void
+    {
+        $sid       = 'zptest' . bin2hex(random_bytes(6));
+        $sessDir   = sys_get_temp_dir() . '/zptest-sess-' . bin2hex(random_bytes(4));
+        mkdir($sessDir, 0700, true);
+        // An id the server issued (subprocesses run with session.use_strict_mode=1,
+        // which rotates an id the store has never seen).
+        touch($sessDir . '/sess_' . $sid);
+        $setter = $this->fixture(
+            'set.php',
+            'session_save_path(' . var_export($sessDir, true) . ');'
+            . ' session_start();'
+            . ' $_SESSION["test"] = "Success!";'
+            . ' echo "Session Set!";'
+        );
+        $getter = $this->fixture(
+            'get.php',
+            'session_save_path(' . var_export($sessDir, true) . ');'
+            . ' session_start();'
+            . ' echo "Value: " . ($_SESSION["test"] ?? "EMPTY");'
+        );
+
+        $pool = new WorkerPool(size: 1, maxRequestsPerWorker: 100);
+        try {
+            $r1 = $pool->dispatch([
+                'file'    => $setter,
+                'cookies' => ['PHPSESSID' => $sid],
+            ]);
+            $this->assertSame('Session Set!', $r1['body']);
+
+            $r2 = $pool->dispatch([
+                'file'    => $getter,
+                'cookies' => ['PHPSESSID' => $sid],
+            ]);
+            $this->assertSame(
+                'Value: Success!',
+                $r2['body'],
+                'issue #108 — session data set in request 1 must survive into request 2 on the same pool worker'
+            );
+        } finally {
+            $pool->close();
+            // Best-effort cleanup of the per-test session dir.
+            foreach (glob($sessDir . '/*') ?: [] as $f) {
+                @unlink($f);
+            }
+            @rmdir($sessDir);
+        }
+    }
+
+    /**
+     * H1 — a reused pool subprocess must not hand the previous visitor's
+     * session to the next one. session_write_close() at reset left PHP's
+     * internal session id set, so request 2's session_start() (no cookie)
+     * resumed request 1's session: it read alice's data, and the frame's
+     * session_id — which the host turns into Set-Cookie — was alice's id.
+     */
+    public function testReusedSubprocessDoesNotHandPreviousSessionToNextVisitor(): void
+    {
+        $sessDir = sys_get_temp_dir() . '/zptest-sess-' . bin2hex(random_bytes(4));
+        mkdir($sessDir, 0700, true);
+        $sp = var_export($sessDir, true);
+        $login = $this->fixture('login.php',
+            "session_save_path($sp); session_start(); \$_SESSION['user'] = 'alice'; echo 'in';");
+        $anon = $this->fixture('anon.php',
+            "session_save_path($sp); session_start(); echo 'user=' . (\$_SESSION['user'] ?? 'none');");
+        // Request 1 also renames the session cookie; that must not stick either.
+        $renamer = $this->fixture('rename.php',
+            "session_save_path($sp); session_name('APPSESS'); session_start(); echo session_name();");
+        $name = $this->fixture('name.php', 'echo session_name();');
+
+        $pool = new WorkerPool(size: 1, maxRequestsPerWorker: 100);
+        try {
+            $r1 = $pool->dispatch(['file' => $login, 'cookies' => []]);
+            $this->assertSame('in', $r1['body']);
+            $this->assertIsString($r1['session_id'] ?? null);
+
+            $r2 = $pool->dispatch(['file' => $anon, 'cookies' => []]);
+            $this->assertSame('user=none', $r2['body'],
+                'a cookieless visitor on the same subprocess must not resume the previous session');
+            $this->assertNotSame($r1['session_id'], $r2['session_id'] ?? null,
+                'the next visitor must not be handed the previous session id (Set-Cookie leak)');
+
+            // The legitimate owner, sending the cookie, still gets the session.
+            $r3 = $pool->dispatch(['file' => $anon, 'cookies' => ['PHPSESSID' => $r1['session_id']]]);
+            $this->assertSame('user=alice', $r3['body']);
+
+            $r4 = $pool->dispatch(['file' => $renamer, 'cookies' => []]);
+            $this->assertSame('APPSESS', $r4['body']);
+            $r5 = $pool->dispatch(['file' => $name, 'cookies' => []]);
+            $this->assertSame('PHPSESSID', $r5['body'], 'session_name() from a previous request must not persist');
+            $this->assertSame([5], $pool->servedCounts(), 'all requests ran on the one reused subprocess');
+        } finally {
+            $pool->close();
+            foreach (glob($sessDir . '/*') ?: [] as $f) {
+                @unlink($f);
+            }
+            @rmdir($sessDir);
+        }
+    }
+
+    /**
+     * H2 — bytes app code writes straight to fd 1 must never become part of a
+     * response. The body used to travel on raw STDOUT with only its length
+     * framed, so request 1's stray php://stdout write shifted its own tail
+     * ("A") into request 2's body on the same subprocess.
+     */
+    public function testDirectStdoutWritesNeverLeakIntoNextResponse(): void
+    {
+        $first = $this->fixture('stdout-writer.php',
+            "\$f = fopen('php://stdout', 'w'); fwrite(\$f, 'SECRET'); fwrite(STDOUT, 'X');"
+            . " echo str_repeat('A', 100);"
+            // A destructor that echoes during reset, after output buffering is closed.
+            . " class LateEcho { public function __destruct() { echo 'LATE'; } } \$late = new LateEcho();");
+        $second = $this->fixture('b.php', "echo 'B';");
+
+        $pool = new WorkerPool(size: 1, maxRequestsPerWorker: 100);
+        try {
+            $r1 = $pool->dispatch(['file' => $first]);
+            $this->assertSame(str_repeat('A', 100), $r1['body'],
+                'direct stdout writes are not response body (FPM / mod_php parity)');
+            $r2 = $pool->dispatch(['file' => $second]);
+            $this->assertSame('B', $r2['body'], 'request 2 body must not contain request 1 bytes');
+            $r3 = $pool->dispatch(['file' => $second]);
+            $this->assertSame('B', $r3['body']);
+            $this->assertSame([3], $pool->servedCounts());
+        } finally {
+            $pool->close();
+        }
+    }
+
+    /**
+     * M9 — the pool subprocess's stderr was never drained, so once ~64 KB of
+     * warnings filled the pipe the child blocked in fwrite() and the parent's
+     * blocking read on fd 3 never returned (not even at the dispatch timeout).
+     */
+    public function testStderrFloodDoesNotWedgeSubprocess(): void
+    {
+        $file = $this->fixture('warn.php',
+            "for (\$i = 0; \$i < 3000; \$i++) { trigger_error(str_repeat('w', 100), E_USER_WARNING); } echo 'done';");
+        $pool = new WorkerPool(size: 1, maxRequestsPerWorker: 100);
+        try {
+            $start = microtime(true);
+            for ($i = 0; $i < 2; $i++) {
+                $resp = $pool->dispatch(['file' => $file], 10.0);
+                $this->assertSame(200, $resp['status'], "iter $i: " . (string) ($resp['body'] ?? ''));
+                $this->assertSame('done', $resp['body']);
+            }
+            $this->assertLessThan(8.0, microtime(true) - $start, '~450 KB of stderr must not stall dispatch');
+        } finally {
+            $pool->close();
+        }
+    }
+
+    /**
+     * A wedged subprocess (here: sleeping past the deadline) yields a 504 at
+     * the dispatch timeout and is replaced; the pool keeps serving.
+     */
+    public function testTimedOutSubprocessIsReplaced(): void
+    {
+        $slow = $this->fixture('slow.php', "sleep(30); echo 'late';");
+        $fast = $this->fixture('fast.php', "echo 'ok';");
+        $pool = new WorkerPool(size: 1, maxRequestsPerWorker: 100);
+        try {
+            $start = microtime(true);
+            $resp = $pool->dispatch(['file' => $slow], 1.0);
+            $this->assertSame(504, $resp['status']);
+            $this->assertLessThan(10.0, microtime(true) - $start);
+            $this->assertSame('ok', $pool->dispatch(['file' => $fast], 10.0)['body']);
+        } finally {
+            $pool->close();
+        }
+    }
+
+    /**
+     * Invalid UTF-8 in a request field (not the body) used to fail
+     * json_encode() twice and REPLACE the request with a synthetic 500 frame,
+     * which the subprocess then read as a request with no file.
+     */
+    public function testInvalidUtf8InRequestFieldStillDispatches(): void
+    {
+        $file = $this->fixture('q.php', "echo 'q=' . (\$_GET['q'] ?? 'missing') . ';ok';");
+        $pool = new WorkerPool(size: 1);
+        try {
+            $resp = $pool->dispatch(['file' => $file, 'get' => ['q' => "a\xffb"]]);
+            $this->assertSame(200, $resp['status'], (string) $resp['body']);
+            $this->assertSame("q=a\u{FFFD}b;ok", $resp['body']);
+        } finally {
+            $pool->close();
+        }
+    }
+}
