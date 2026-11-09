@@ -21,9 +21,6 @@ class FormBinder implements ComponentBinder
 {
     public function rootAttributes(Component $component, ?string $submitUrl): array
     {
-        if ($component->tag() !== 'form') {
-            return [];
-        }
         return ['method' => 'post', 'action' => $submitUrl ?? $component->actionUrl(Component::REFRESH)];
     }
 
@@ -41,6 +38,12 @@ class FormBinder implements ComponentBinder
     public function modelAttributes(Component $component, string $prop, Model $model, string $updateUrl, bool $preserve): array
     {
         return [];
+    }
+
+    /** Markers a script can act on; without JavaScript nothing delivers events. */
+    public function listenerAttributes(Component $component, string $event, string $url): array
+    {
+        return ['data-zc-on' => $event, 'data-zc-url' => $url, 'data-zc-for' => $component->id()];
     }
 
     public function isAsync(array $server): bool

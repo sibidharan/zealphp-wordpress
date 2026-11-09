@@ -22,6 +22,8 @@ final class Endpoint
     /** Session key holding snapshots for no-JS round trips, by instance id. */
     public const FLASH_KEY = '_zc_flash';
     private const MAX_FLASH = 20;
+    /** Most nested components one request may carry snapshots for. */
+    private const MAX_CARRIED = 256;
 
     /**
      * @param array<string, mixed> $input  form fields (`$g->post`)
@@ -32,6 +34,7 @@ final class Endpoint
     {
         $binder = App::componentBinder();
         $async = $binder->isAsync($server);
+        RequestContext::instance()->memo['_zc_kids'] = [];
         try {
             if (!self::sameOrigin($server)) {
                 throw ComponentException::forbidden('Cross-origin component request refused');
@@ -45,14 +48,29 @@ final class Endpoint
             if ($meta === null) {
                 throw ComponentException::notFound("Unknown component {$name}");
             }
-            if ($action !== Component::UPDATE && $action !== Component::REFRESH && !isset($meta->actions[$action])) {
+            if ($action !== Component::UPDATE && $action !== Component::REFRESH && $action !== Component::ON
+                && !isset($meta->actions[$action])) {
                 throw ComponentException::notFound("Unknown action {$action}");
+            }
+            // An event: the #[On] methods for it, each authorized by its own name.
+            $listeners = [];
+            if ($action === Component::ON) {
+                $event = $input['_zc_event'] ?? null;
+                $listeners = is_string($event) ? ($meta->listeners[$event] ?? []) : [];
+                if ($listeners === []) {
+                    throw ComponentException::notFound('This component does not listen for that event');
+                }
             }
             $wire = $input['_zc'] ?? '';
             $snapshot = Snapshot::decode(is_string($wire) ? $wire : '', $meta);
+            // Nested components' snapshots, so a re-render rebuilds each child
+            // from its current state. Each one is verified when it's used.
+            RequestContext::instance()->memo['_zc_kids'] = self::carried($input['_zc_kids'] ?? null);
             $component = Component::zcRestore($meta, $snapshot);
-            if (!$component->authorize($action)) {
-                throw ComponentException::forbidden("Not allowed: {$action}");
+            foreach ($listeners === [] ? [$action] : $listeners as $authorized) {
+                if (!$component->authorize($authorized)) {
+                    throw ComponentException::forbidden("Not allowed: {$authorized}");
+                }
             }
 
             $changed = $component->zcApplyInput($input);
@@ -71,7 +89,11 @@ final class Endpoint
                 } else {
                     $component->zcRunUpdatedHooks($changed);
                     // Don't run an action on values that didn't convert.
-                    if ($outcome === Outcome::Ok && $action !== Component::REFRESH) {
+                    if ($outcome === Outcome::Ok && $action === Component::ON) {
+                        foreach ($listeners as $method) {
+                            $component->zcListen($method);
+                        }
+                    } elseif ($outcome === Outcome::Ok && $action !== Component::REFRESH) {
                         $component->zcCall($action, self::decodeArgs($input['_zc_args'] ?? null));
                     }
                 }
@@ -95,6 +117,9 @@ final class Endpoint
                 // (Post/Redirect/Get), then send the browser back.
                 if ($redirect === null) {
                     self::flash($component);
+                    foreach (self::carried($input['_zc_kids'] ?? null) as $kidId => $kidWire) {
+                        self::flashWire($kidId, $kidWire);
+                    }
                 }
                 return self::seeOther($redirect ?? self::backUrl($server));
             }
@@ -140,10 +165,45 @@ final class Endpoint
         return $wire;
     }
 
+    /**
+     * The snapshot a request carried for a nested component, if any.
+     *
+     * @internal
+     */
+    public static function carriedSnapshot(string $id): ?string
+    {
+        $kids = RequestContext::instance()->memo['_zc_kids'] ?? null;
+        return is_array($kids) && is_string($kids[$id] ?? null) ? $kids[$id] : null;
+    }
+
+    /**
+     * `_zc_kids[id] = snapshot` from a request: string keys and values only,
+     * at most {@see self::MAX_CARRIED}.
+     *
+     * @return array<string, string>
+     */
+    private static function carried(mixed $kids): array
+    {
+        $out = [];
+        foreach (is_array($kids) ? $kids : [] as $id => $wire) {
+            if (is_string($id) && is_string($wire) && preg_match('/^[A-Za-z0-9_-]{1,512}$/D', $id) === 1) {
+                $out[$id] = $wire;
+            }
+        }
+        return array_slice($out, 0, self::MAX_CARRIED, true);
+    }
+
     private static function flash(Component $component): void
     {
         $wire = $component->zcWire();
-        if ($wire === null || \ZealPHP\Session\zeal_session_status() !== PHP_SESSION_ACTIVE) {
+        if ($wire !== null) {
+            self::flashWire($component->id(), $wire);
+        }
+    }
+
+    private static function flashWire(string $id, string $wire): void
+    {
+        if (\ZealPHP\Session\zeal_session_status() !== PHP_SESSION_ACTIVE) {
             return;
         }
         $g = RequestContext::instance();
@@ -151,8 +211,8 @@ final class Endpoint
         if (!is_array($flash)) {
             $flash = [];
         }
-        unset($flash[$component->id()]);
-        $flash[$component->id()] = $wire;
+        unset($flash[$id]);
+        $flash[$id] = $wire;
         $g->session[self::FLASH_KEY] = array_slice($flash, -self::MAX_FLASH, null, true);
     }
 

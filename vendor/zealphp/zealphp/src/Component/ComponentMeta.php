@@ -14,13 +14,15 @@ namespace ZealPHP\Component;
 final class ComponentMeta
 {
     /** Template variables every component view receives. */
-    private const RESERVED = ['c', 'errors'];
+    private const RESERVED = ['c', 'errors', 'slot'];
 
     /**
      * @param class-string<Component>                  $class
      * @param array<string, Type>                      $props   every state property
      * @param array<string, Model>                     $models  the input-bound subset
      * @param array<string, list<array{name: string, type: Type, optional: bool, default: mixed}>> $actions
+     * @param list<string>                             $reactive state properties a parent's props keep updating
+     * @param array<string, list<string>>              $listeners event name → #[On] methods
      */
     private function __construct(
         public readonly string $name,
@@ -29,6 +31,8 @@ final class ComponentMeta
         public readonly array $models,
         public readonly array $actions,
         public readonly string $version,
+        public readonly array $reactive = [],
+        public readonly array $listeners = [],
     ) {
     }
 
@@ -51,13 +55,14 @@ final class ComponentMeta
 
         $props = [];
         $models = [];
+        $reactive = [];
         foreach ($rc->getProperties(\ReflectionProperty::IS_PUBLIC) as $p) {
             if ($p->isStatic() || $p->getDeclaringClass()->getName() === Component::class) {
                 continue;
             }
             $where = "{$class}::\${$p->getName()}";
             if (in_array($p->getName(), self::RESERVED, true) || str_starts_with($p->getName(), '_')) {
-                throw new \LogicException("{$where}: the name is reserved (c, errors, and names starting with _)");
+                throw new \LogicException("{$where}: the name is reserved (c, errors, slot, and names starting with _)");
             }
             if ($p->isReadOnly()) {
                 throw new \LogicException("{$where}: component state can't be readonly");
@@ -66,6 +71,9 @@ final class ComponentMeta
             $attrs = $p->getAttributes(Model::class);
             if ($attrs !== []) {
                 $models[$p->getName()] = $attrs[0]->newInstance();
+            }
+            if ($p->getAttributes(Reactive::class) !== []) {
+                $reactive[] = $p->getName();
             }
         }
 
@@ -101,6 +109,27 @@ final class ComponentMeta
             $actions[$m->getName()] = $params;
         }
 
+        $listeners = [];
+        foreach ($rc->getMethods() as $m) {
+            $on = $m->getAttributes(On::class);
+            if ($on === []) {
+                continue;
+            }
+            $where = "{$class}::{$m->getName()}()";
+            if (!$m->isPublic() || $m->isStatic() || str_starts_with($m->getName(), '_')
+                || $m->getDeclaringClass()->getName() === Component::class) {
+                throw new \LogicException("{$where}: #[On] must be on a public, non-static method of the component whose name doesn't start with _");
+            }
+            if ($m->getNumberOfRequiredParameters() > 0) {
+                throw new \LogicException("{$where}: an #[On] method takes no arguments (events carry no data)");
+            }
+            foreach ($on as $attr) {
+                foreach ($attr->newInstance()->events as $event) {
+                    $listeners[$event][] = $m->getName();
+                }
+            }
+        }
+
         $shape = [$class];
         foreach ($props as $prop => $type) {
             $shape[] = "p:{$prop}:" . $type->describe() . (isset($models[$prop]) ? ':m' : '');
@@ -113,6 +142,6 @@ final class ComponentMeta
         }
         $version = substr(hash('sha256', implode("\n", $shape)), 0, 16);
 
-        return new self($name, $class, $props, $models, $actions, $version);
+        return new self($name, $class, $props, $models, $actions, $version, $reactive, $listeners);
     }
 }

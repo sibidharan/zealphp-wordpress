@@ -16,7 +16,7 @@ return array(
     'Psr\\Http\\Client\\' => array($vendorDir . '/psr/http-client/src'),
     'Psr\\EventDispatcher\\' => array($vendorDir . '/psr/event-dispatcher/src'),
     'OpenSwoole\\Core\\' => array($vendorDir . '/openswoole/core/src'),
-    'Nette\\' => array($vendorDir . '/nette/utils/src', $vendorDir . '/nette/schema/src'),
+    'Nette\\' => array($vendorDir . '/nette/schema/src', $vendorDir . '/nette/utils/src'),
     'League\\Config\\' => array($vendorDir . '/league/config/src'),
     'League\\CommonMark\\' => array($vendorDir . '/league/commonmark/src'),
     'Dflydev\\DotAccessData\\' => array($vendorDir . '/dflydev/dot-access-data/src'),

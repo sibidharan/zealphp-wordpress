@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [0.4.19] - 2026-11-09
+
+### Added — slots for reactive components (#509 phase 4)
+- **A parent can pass markup into a reactive child as the `slot` prop**; the child prints `<?= $slot ?>` (or `$this->slot()`). It's kept in the child's signed snapshot, so the child's own updates re-render it, and a parent re-render replaces it. A slot can't contain reactive components (refused: their state would be frozen inside). Guide: [Nesting components](docs/components.md#nesting-components).
+- `slot` is now a reserved component property name.
+
+### Added — events between components (#509 phase 4)
+- **`#[On('event')]`** runs a component method when another component on the page dispatches that event (`$this->dispatch('cart-updated')`), then re-renders the listener through its own snapshot and session. A component doesn't hear its own events. Delivered by htmx (`HX-Trigger` → `hx-trigger="… from:body"`) and by `ZealJsBinder`; not without JavaScript. Guide: [Events between components](docs/components.md#events-between-components).
+- New endpoint action `_on` (with `_zc_event`); `authorize()` is called with each listener's method name.
+- **Breaking for custom binders:** `ComponentBinder` gains `listenerAttributes()`. Binders extending `FormBinder` inherit it.
+
+### Fixed
+- **Events without detail never fired on htmx 4.** `HX-Trigger: {"name": null}` made htmx 4's `trigger()` throw (it reads `detail.cancelled`). Detail-less events now go out as `{}`.
+
+### Added — nested reactive components (#509 phase 4)
+- **Reactive components can render reactive components.** Give each child a `key:` (required inside a parent; ids are scoped by the parent's). Guide: [Nesting components](docs/components.md#nesting-components); design and decisions: [component composition](docs/architecture/2026-11-09-component-composition.md).
+- **Each component sends only its own fields.** A component posts its own form — the outer element when `$tag` is `'form'`, otherwise an empty `<form id="{id}-zc">` it renders first — and every control and action button joins it with `form="…"`. htmx requests target the component by id and include exactly that form. Works the same with htmx 2, htmx 4, `ZealJsBinder` and without JavaScript; a `div` component with a `$submit` action now also submits on Enter without JavaScript.
+- **Children keep their state when the parent re-renders.** Each child's signed snapshot travels in its parent's form (`_zc_kids`); a parent re-render rebuilds each child from its own state, verified and used only for its own id.
+- **`#[Reactive]`** marks a child property that follows the parent's props after mount; other properties belong to the child.
+- Markup change: bound controls and action buttons carry a `form` attribute, and non-form components render a hidden form first. Templates don't change.
+
+### Changed — one template rule for `render()` and `component()`
+- **`component()` resolves names exactly like `render()`.** One resolver serves both: a leading `/` is absolute from `template/`; otherwise nearest first: the current page's folder, that page's `components/` folder (new: colocate a component with the one page that uses it), `template/`, then `template/components/`, with `name.php` before the partial `_name.php` in each place. Existing `component('card')` calls resolve as before (`template/components/` is the last place looked). A missing template's error lists every place it looked.
+- **A component returns content only, and says so.** Stateless templates and reactive `render()` share one coercion (`App::componentMarkup()`): echo, strings, `SafeHtml`/`Stringable`, Generators, and Closures (now called with their props injected — previously printed as `{}`). A status code, array or response object used to be printed into the page (`404`, `{"ok":true}`); it now throws a `LogicException` explaining that the route or page owning the response must return it.
+
+### Added — components without htmx
+- **`ZealJsBinder` and its bundled `zeal.js`**: components on pages without htmx. `App::componentBinder(new ZealJsBinder())` plus `<?= ZealJsBinder::script() ?>` in the layout. It speaks the plain protocol (`Zeal-Request`, `Zeal-Events` as DOM events, `Zeal-Redirect`, `Zeal-Reload`, 422 for validation), swaps in place keeping the field being typed in, and keeps the no-JS form markup. See [Without htmx](docs/components.md#without-htmx-zealjsbinder).
+
+### Added — component dev tools
+- **`ZealPHP\Component\Tester`** drives a reactive component through the real endpoint in a unit test: `Tester::render(Counter::class)->call('increment')->assertSet('count', 1)`, `->set('email', …)->assertHasErrors('email')`, plus `assertSee`, `assertDispatched`, `assertRedirect` and `assertStatus`. No server or browser needed. Guide: [Testing components](docs/components.md#testing-components).
+- **`php app.php make:component Name [--stateless]`** writes a component class and its template (or just a template), in your `src/` namespace, never overwriting.
+
+### Documentation
+- **Components, end to end** (#524): the guide now walks one component from class to template to registration to the page that renders it, and shows the HTML the browser gets.
+- **Docs-site headings get GitHub-style ids** (#522), so `#anchor` links from the guides and the README land on the right section.
+
 ## [0.4.18] - 2026-11-09
 
 ### Added — component push (#509 phase 3)

@@ -45,6 +45,8 @@ abstract class Component
     public const UPDATE = '_update';
     /** Re-renders with the current state (and any submitted input). */
     public const REFRESH = '_refresh';
+    /** Runs this component's #[On] methods for the event in `_zc_event`, then re-renders. */
+    public const ON = '_on';
 
     /** The outer element. Use `'form'` so the component works without JavaScript. */
     protected string $tag = 'div';
@@ -68,6 +70,13 @@ abstract class Component
     private array $zcBadInput = [];
     /** @var array<string, string> the raw submitted text of those fields, to show back */
     private array $zcRaw = [];
+    /** @var list<string> form ids of the components this one is nested in, outermost first */
+    private array $zcAncestors = [];
+    /** Markup the parent passed as the `slot` prop; kept in the snapshot. */
+    private ?string $zcSlot = null;
+
+    /** How deep reactive components may nest. */
+    private const MAX_DEPTH = 8;
 
     /** Produce the component's inner HTML: a string, SafeHtml, or a Generator of strings. */
     abstract public function render(): mixed;
@@ -145,7 +154,7 @@ abstract class Component
      */
     protected function view(string $template, array $vars = []): SafeHtml
     {
-        $args = $vars + $this->state() + ['c' => $this, 'errors' => $this->zcErrors];
+        $args = $vars + $this->state() + ['c' => $this, 'errors' => $this->zcErrors, 'slot' => $this->slot()];
         // Not a fragment selector: a component template is always rendered whole.
         unset($args['fragment']);
         // Absolute from template/: a relative name would be namespaced by the
@@ -158,6 +167,18 @@ abstract class Component
     public function id(): string
     {
         return $this->zcId;
+    }
+
+    /**
+     * The id of the form this component's controls belong to: the outer
+     * element itself when `$tag` is `'form'`, otherwise an empty form the
+     * component renders as its first child. Every control and action button
+     * points at it with the `form` attribute, so a request carries exactly
+     * this component's fields — never a nested child's or the parent's.
+     */
+    public function formId(): string
+    {
+        return $this->tag === 'form' ? $this->zcId : $this->zcId . '-zc';
     }
 
     /** The registered component name (e.g. `counter`). */
@@ -191,7 +212,7 @@ abstract class Component
         }
         $json = json_encode($args === [] ? new \stdClass() : $args, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
         return new SafeHtml(Attr::render(
-            App::componentBinder()->actionAttributes($this, $this->actionUrl($action), $json)
+            App::componentBinder()->actionAttributes($this, $this->actionUrl($action), $json) + ['form' => $this->formId()]
         ));
     }
 
@@ -213,8 +234,8 @@ abstract class Component
         $type = $this->meta()->props[$prop];
         // A checkbox group repeats the control, so it gets no id (ids must be unique).
         $attrs = $type->kind === 'array'
-            ? ['name' => $prop . '[]']
-            : ['name' => $prop, 'id' => $this->zcId . '-' . $prop];
+            ? ['name' => $prop . '[]', 'form' => $this->formId()]
+            : ['name' => $prop, 'id' => $this->zcId . '-' . $prop, 'form' => $this->formId()];
         if ($withValue && $type->kind !== 'array') {
             $attrs['value'] = $type->kind === 'bool' ? '1' : $this->value($prop, false);
         }
@@ -349,6 +370,10 @@ abstract class Component
     final public static function zcMount(ComponentMeta $meta, array $props, string $id): self
     {
         $c = self::zcInstantiate($meta, $id);
+        if (array_key_exists('slot', $props)) {
+            $c->zcSlot = self::slotMarkup($props['slot'], $meta->class);
+            unset($props['slot']);
+        }
         foreach ($props as $prop => $value) {
             if (!is_string($prop) || !isset($meta->props[$prop])) {
                 throw new \LogicException("{$meta->class} has no state property \${$prop}");
@@ -383,8 +408,84 @@ abstract class Component
         }
         $c->zcErrors = $snapshot->errors;
         $c->zcFields = array_values(array_intersect($snapshot->fields, array_keys($meta->models)));
+        $c->zcAncestors = $snapshot->ancestors;
+        $c->zcSlot = $snapshot->slot;
         $c->hydrate();
         return $c;
+    }
+
+    /**
+     * Run this component's #[On] methods for an event (validated by the caller).
+     *
+     * @internal
+     */
+    final public function zcListen(string $method): void
+    {
+        $this->{$method}();
+    }
+
+    /**
+     * Take a parent's new values for this child's `#[Reactive]` properties.
+     * The rest of the child's state stays its own.
+     *
+     * @internal
+     * @param array<string, mixed> $props
+     */
+    final public function zcApplyReactive(array $props): void
+    {
+        $meta = $this->meta();
+        // A slot is the parent's markup: it always follows the parent.
+        if (array_key_exists('slot', $props)) {
+            $this->zcSlot = self::slotMarkup($props['slot'], $meta->class);
+        }
+        foreach ($meta->reactive as $prop) {
+            if (!array_key_exists($prop, $props)) {
+                continue;
+            }
+            try {
+                $this->setProp($prop, $meta->props[$prop]->fromSnapshot($props[$prop]));
+            } catch (\InvalidArgumentException $e) {
+                throw new \LogicException("{$meta->class}::\${$prop} " . $e->getMessage(), 0, $e);
+            }
+        }
+    }
+
+    /** Markup the parent passed as the `slot` prop, or null. */
+    public function slot(): ?SafeHtml
+    {
+        return $this->zcSlot === null ? null : new SafeHtml($this->zcSlot);
+    }
+
+    /**
+     * A `slot` prop as markup. It's kept in the snapshot and re-rendered as
+     * it was, so it can't hold reactive components: their state would be
+     * frozen inside it. Render those in the parent instead.
+     */
+    private static function slotMarkup(mixed $slot, string $class): ?string
+    {
+        if ($slot === null) {
+            return null;
+        }
+        if (!is_string($slot) && !$slot instanceof \Stringable) {
+            throw new \LogicException("{$class}: the slot prop must be markup (a string or SafeHtml)");
+        }
+        $markup = (string) $slot;
+        if (str_contains($markup, ' data-zc="')) {
+            throw new \LogicException("{$class}: a slot can't contain reactive components (their state would be frozen in it); render them in the parent instead");
+        }
+        return $markup;
+    }
+
+    /**
+     * The reactive component whose render is running, if any: the parent of
+     * a component rendered now.
+     *
+     * @internal
+     */
+    final public static function zcParent(): ?RenderFrame
+    {
+        $frame = RequestContext::instance()->memo['_zc_parent'] ?? null;
+        return $frame instanceof RenderFrame ? $frame : null;
     }
 
     /**
@@ -556,13 +657,26 @@ abstract class Component
             throw new \LogicException(static::class . ": invalid \$tag '{$this->tag}'");
         }
         $this->zcFields = [];
+        $parent = self::zcParent();
+        if ($parent !== null) {
+            // Forms can't nest: a child's form inside a form root would be dropped.
+            if ($parent->tag === 'form') {
+                throw new \LogicException("{$parent->id} has \$tag = 'form', so it can't contain the reactive component " . static::class . "; use the default \$tag (div)");
+            }
+            if ($this->tag === 'form') {
+                throw new \LogicException(static::class . ": a nested component can't use \$tag = 'form' (forms can't nest); use the default \$tag (div)");
+            }
+            $this->zcAncestors = [...$parent->ancestors, $parent->form];
+        }
+        if (count($this->zcAncestors) >= self::MAX_DEPTH) {
+            throw new \LogicException('Reactive components nest at most ' . self::MAX_DEPTH . ' deep');
+        }
         $g = RequestContext::instance();
-        $depth = $g->memo['_zc_depth'] ?? 0;
-        $g->memo['_zc_depth'] = (is_int($depth) ? $depth : 0) + 1;
+        $g->memo['_zc_parent'] = new RenderFrame($this->zcId, $this->formId(), $this->tag, $this->zcAncestors);
         try {
-            $body = self::stringify($this->render());
+            $body = App::componentMarkup($this->render(), static::class . '::render()');
         } finally {
-            $g->memo['_zc_depth'] = is_int($depth) ? $depth : 0;
+            $g->memo['_zc_parent'] = $parent;
         }
 
         $meta = $this->meta();
@@ -578,6 +692,8 @@ abstract class Component
             Snapshot::currentBinding(),
             $this->zcFields,
             $this->zcErrors,
+            ancestors: $this->zcAncestors,
+            slot: $this->zcSlot,
         ))->encode();
 
         $submitUrl = null;
@@ -587,24 +703,55 @@ abstract class Component
             }
             $submitUrl = $this->actionUrl($this->submit);
         }
-        $attrs = Attr::merge(
-            $this->attributes,
-            App::componentBinder()->rootAttributes($this, $submitUrl),
-            ['id' => $this->zcId, 'data-zc' => $meta->name],
-        );
+        $formAttrs = App::componentBinder()->rootAttributes($this, $submitUrl);
+        $ids = ['id' => $this->zcId, 'data-zc' => $meta->name];
+        $form = '';
+        if ($this->tag === 'form') {
+            $attrs = Attr::merge($this->attributes, $formAttrs, $ids);
+        } else {
+            // An empty form of its own; controls join it with form="...". Forms
+            // never nest this way, so components can.
+            $attrs = Attr::merge($this->attributes, $ids);
+            $form = '<form ' . Attr::render(Attr::merge($formAttrs, [
+                'id' => $this->formId(), 'hidden' => true, 'data-zc-form' => $this->zcId,
+            ])) . '></form>';
+        }
         // Pressing Enter submits with the form's FIRST submit button. Put a
         // hidden one for $submit first, so an action button earlier in the
         // template (e.g. "Remove") doesn't run instead.
         $defaultSubmit = '';
-        if ($submitUrl !== null && $this->tag === 'form') {
+        if ($submitUrl !== null) {
             $defaultSubmit = '<button ' . Attr::render([
                 'type' => 'submit', 'hidden' => true, 'tabindex' => '-1', 'aria-hidden' => 'true',
-                'formaction' => $submitUrl, 'formmethod' => 'post',
+                'formaction' => $submitUrl, 'formmethod' => 'post', 'form' => $this->formId(),
             ]) . '></button>';
         }
+        // A copy of this snapshot in each enclosing component's form, so when
+        // a parent re-renders it rebuilds this child from its current state.
+        $carried = '';
+        foreach ($this->zcAncestors as $ancestorForm) {
+            $carried .= '<input ' . Attr::render([
+                'type' => 'hidden', 'name' => '_zc_kids[' . $this->zcId . ']', 'value' => $this->zcWire, 'form' => $ancestorForm,
+            ]) . '>';
+        }
+        // A hidden element per event this component listens for; the binder
+        // decides how the page delivers the event (htmx: hx-trigger). It's a
+        // button in the component's form, so a request from it carries that
+        // form (htmx 4 sends an element's own form, not a detached form's
+        // non-descendants), and type=button never submits without JS.
+        $listeners = '';
+        foreach (array_keys($meta->listeners) as $event) {
+            $listeners .= '<button ' . Attr::render(
+                ['type' => 'button', 'hidden' => true, 'tabindex' => '-1', 'aria-hidden' => 'true', 'form' => $this->formId()]
+                + App::componentBinder()->listenerAttributes($this, $event, $this->actionUrl(self::ON))
+            ) . '></button>';
+        }
         return '<' . $this->tag . ' ' . Attr::render($attrs) . '>'
-            . '<input type="hidden" name="_zc" value="' . Escape::html($this->zcWire) . '">'
+            . $form
+            . '<input type="hidden" name="_zc" value="' . Escape::html($this->zcWire) . '" form="' . Escape::html($this->formId()) . '">'
+            . $carried
             . $defaultSubmit
+            . $listeners
             . $body
             . '</' . $this->tag . '>';
     }
@@ -705,23 +852,5 @@ abstract class Component
         }
         $this->zcErrors = $errors + $this->zcErrors;
         return $errors;
-    }
-
-    private static function stringify(mixed $out): string
-    {
-        if ($out instanceof \Generator) {
-            $buf = '';
-            foreach ($out as $chunk) {
-                $buf .= self::stringify($chunk);
-            }
-            return $buf;
-        }
-        if ($out === null) {
-            return '';
-        }
-        if (is_scalar($out) || $out instanceof \Stringable) {
-            return (string) $out;
-        }
-        throw new \LogicException('Component render() must return a string, SafeHtml, or a Generator of strings');
     }
 }

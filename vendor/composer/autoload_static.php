@@ -98,8 +98,8 @@ class ComposerStaticInit9994867abbda5e5dcb5367a4499de518
         ),
         'Nette\\' => 
         array (
-            0 => __DIR__ . '/..' . '/nette/utils/src',
-            1 => __DIR__ . '/..' . '/nette/schema/src',
+            0 => __DIR__ . '/..' . '/nette/schema/src',
+            1 => __DIR__ . '/..' . '/nette/utils/src',
         ),
         'League\\Config\\' => 
         array (

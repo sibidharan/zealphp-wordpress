@@ -1164,17 +1164,17 @@
         },
         {
             "name": "zealphp/zealphp",
-            "version": "v0.4.18",
-            "version_normalized": "0.4.18.0",
+            "version": "v0.4.19",
+            "version_normalized": "0.4.19.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/sibidharan/zealphp.git",
-                "reference": "f10c42b12332c1d3768a2e6c59f5801297700424"
+                "reference": "491d35de96263d384ec3d3ab767b2e104eafb5f0"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/sibidharan/zealphp/zipball/f10c42b12332c1d3768a2e6c59f5801297700424",
-                "reference": "f10c42b12332c1d3768a2e6c59f5801297700424",
+                "url": "https://api.github.com/repos/sibidharan/zealphp/zipball/491d35de96263d384ec3d3ab767b2e104eafb5f0",
+                "reference": "491d35de96263d384ec3d3ab767b2e104eafb5f0",
                 "shasum": ""
             },
             "require": {
@@ -1202,7 +1202,7 @@
                 "ext-uopz": "Legacy fallback if ext-zealphp is not available",
                 "ext-zealphp": "Recommended: per-request function overrides + per-coroutine superglobals (pie install zealphp/ext)"
             },
-            "time": "2026-11-09T12:07:17+00:00",
+            "time": "2026-11-09T15:49:11+00:00",
             "type": "library",
             "installation-source": "dist",
             "autoload": {

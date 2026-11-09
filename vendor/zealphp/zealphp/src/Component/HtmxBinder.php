@@ -11,8 +11,8 @@ use ZealPHP\RequestContext;
  * attributes on top of the plain-form markup, so pages still work without JS.
  *
  * - Actions and live/blur inputs post to the component endpoint, include
- *   every control inside the component (`hx-include="closest [data-zc]"`),
- *   and swap the re-rendered component in place.
+ *   the component's own form (`hx-include="#{id}-zc"`: its controls, never a
+ *   nested child's), and swap the component, targeted by id, in place.
  * - An action always goes out: it replaces (aborts) a live update still in
  *   flight on the same component — the action request carries every field
  *   anyway. It doesn't queue behind it, because htmx drops a queued request
@@ -52,7 +52,6 @@ use ZealPHP\RequestContext;
  */
 class HtmxBinder extends FormBinder
 {
-    private const TARGET = 'closest [data-zc]';
 
     public function __construct(private readonly bool $morph = false, private readonly int $htmx = 2)
     {
@@ -80,11 +79,11 @@ class HtmxBinder extends FormBinder
         if ($this->morph && $this->dialect() === 2) {
             $attrs['hx-ext'] = 'morph';
         }
-        if ($submitUrl !== null && $component->tag() === 'form') {
+        if ($submitUrl !== null) {
             $attrs['hx-post'] = $submitUrl;
-            $attrs['hx-target'] = 'this';
+            $attrs['hx-target'] = self::target($component);
             $attrs['hx-swap'] = $this->swap();
-            $attrs['hx-sync'] = 'this:replace';
+            $attrs['hx-sync'] = self::target($component) . ':replace';
         }
         return $attrs;
     }
@@ -93,11 +92,11 @@ class HtmxBinder extends FormBinder
     {
         return Attr::merge(parent::actionAttributes($component, $url, $argsJson), [
             'hx-post' => $url,
-            'hx-target' => self::TARGET,
+            'hx-target' => self::target($component),
             'hx-swap' => $this->swap(),
-            'hx-include' => self::TARGET,
+            'hx-include' => '#' . $component->formId(),
             'hx-vals' => (string) json_encode(['_zc_args' => $argsJson], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-            'hx-sync' => self::TARGET . ':replace',
+            'hx-sync' => self::target($component) . ':replace',
             ($this->dialect() === 4 ? 'hx-disable' : 'hx-disabled-elt') => 'this',
         ]);
     }
@@ -110,15 +109,30 @@ class HtmxBinder extends FormBinder
         return [
             'hx-post' => $updateUrl,
             'hx-trigger' => $model->live ? "input changed delay:{$model->debounce}ms" : 'change',
-            'hx-target' => self::TARGET,
+            'hx-target' => self::target($component),
             'hx-swap' => $this->swap(),
-            'hx-include' => self::TARGET,
-            'hx-sync' => self::TARGET . ':queue last',
+            'hx-include' => '#' . $component->formId(),
+            'hx-sync' => self::target($component) . ':queue last',
             // Names the field that changed, in the body: works on every htmx
             // version (htmx 4 doesn't send HX-Trigger-Name).
             'hx-vals' => (string) json_encode(['_zc_trigger' => $prop], JSON_UNESCAPED_SLASHES),
             // htmx 4 morphs, which already keeps the focused field.
             'hx-preserve' => $preserve && $this->dialect() === 2 ? 'true' : null,
+        ];
+    }
+
+    /** htmx delivers it: the dispatching response's HX-Trigger event bubbles to body. */
+    public function listenerAttributes(Component $component, string $event, string $url): array
+    {
+        return [
+            // A component never hears its own events (it already re-rendered).
+            'hx-trigger' => $event . "[!event.target.closest('#" . $component->id() . "')] from:body",
+            'hx-post' => $url,
+            'hx-target' => self::target($component),
+            'hx-swap' => $this->swap(),
+            'hx-include' => '#' . $component->formId(),
+            'hx-vals' => (string) json_encode(['_zc_event' => $event], JSON_UNESCAPED_SLASHES),
+            'hx-sync' => self::target($component) . ':queue last',
         ];
     }
 
@@ -137,7 +151,12 @@ class HtmxBinder extends FormBinder
     {
         $headers = [];
         if ($events !== []) {
-            $headers['HX-Trigger'] = (string) json_encode($events, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            // An event without detail goes out as {}: htmx 4's trigger() reads
+            // detail.cancelled and throws on null, so the event never fires.
+            $headers['HX-Trigger'] = (string) json_encode(
+                array_map(static fn(mixed $d): mixed => $d ?? new \stdClass(), $events),
+                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+            );
         }
         if ($redirect !== null) {
             $headers['HX-Redirect'] = $redirect;
@@ -151,6 +170,12 @@ class HtmxBinder extends FormBinder
     public function refusalHeaders(): array
     {
         return ['HX-Reswap' => 'none'];
+    }
+
+    /** The component's own element, by id: with nesting, "closest" could be a parent. */
+    private static function target(Component $component): string
+    {
+        return '#' . $component->id();
     }
 
     private function swap(): string
