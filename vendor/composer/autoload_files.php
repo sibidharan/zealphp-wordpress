@@ -6,7 +6,10 @@ $vendorDir = dirname(__DIR__);
 $baseDir = dirname($vendorDir);
 
 return array(
+    '6e3fae29631ef280660b3cdad06f25a8' => $vendorDir . '/symfony/deprecation-contracts/function.php',
+    'a4a119a56e50fbb293281d9a48007e0e' => $vendorDir . '/symfony/polyfill-php80/bootstrap.php',
     '0f5c2e42cd57cee173a4e5751046ee6b' => $vendorDir . '/openswoole/core/src/Coroutine/functions.php',
-    '30cad1d86aa302cbea0f94edb38a9a00' => $vendorDir . '/sibidharan/zealphp/src/utils.php',
-    'e19b310a3e997f884fb8d7a276f6bdea' => $vendorDir . '/sibidharan/zealphp/src/Session/utils.php',
+    'f9533211f40355d8bd8e1571c097d970' => $vendorDir . '/zealphp/zealphp/src/utils.php',
+    '462ed302c89bd7d4a55c795074694e3d' => $vendorDir . '/zealphp/zealphp/src/Session/utils.php',
+    '506de193e9e83a611847b6b901bfe09d' => $vendorDir . '/zealphp/zealphp/src/apache_shims.php',
 );

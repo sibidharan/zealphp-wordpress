@@ -1,6 +1,0 @@
-.phpunit.result.cache
-/bench/results/
-.env
-*.key
-/.sessions/
-/.cache/

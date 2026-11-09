@@ -1,0 +1,61 @@
+.phpunit.result.cache
+/bench/results/
+
+# Generated API reference — phpDocumentor output, regenerated on first
+# `php app.php` boot when missing. Tracked composer.lock + phpdoc.xml
+# guarantee reproducible regeneration; the HTML bundle would add ~10MB
+# of binary noise to every release.
+/public/docs/api/
+
+# phpDocumentor PHAR — fetched on first boot if missing (see app.php boot
+# hook). 33MB self-contained binary; not appropriate to commit. The boot
+# hook downloads from the GitHub releases endpoint that's pinned in
+# scripts/install-phpdoc.sh.
+/tools/phpdoc.phar
+/.phpdoc-cache/
+.env
+*.key
+/.sessions/
+/.cache/
+/storage/learn.db
+/storage/learn.db-wal
+/storage/learn.db-shm
+/storage/learn.test.db
+/storage/learn.test.db-wal
+/storage/learn.test.db-shm
+
+# Composer dependencies — library convention. Users run `composer install`
+# after cloning. Tracked vendor/ used to ship in this repo through v0.2.16;
+# v0.2.17 removed it to drop ~4300 file-changes per release and follow standard
+# PHP library practice (Symfony / Laravel / Mezzio all gitignore vendor/).
+# composer.lock IS tracked — pins versions for CI reproducibility (especially
+# PHPStan, where a minor version bump can change static-analysis output).
+/vendor/
+
+# IDE / local
+/.idea/
+/.vscode/
+*.swp
+
+# Mutation testing logs
+infection.log
+infection-summary.log
+infection.html
+.infection-cache/
+
+# Python bytecode (fuzz harness helpers)
+__pycache__/
+*.pyc
+.omc
+
+# Per-session ephemeral
+/.claude/scheduled_tasks.lock
+/.claude/worktrees/
+/.phpdoc/
+/public/css/pages.css
+
+# Runtime log directory (access.log, debug.log, zlog.log, server.log,
+# *.pid). ZealPHP writes here per CLAUDE.md; harmless to gitignore the
+# whole subtree because nothing user-curated lives under tmp/.
+/tmp/
+.claude/settings.local.json

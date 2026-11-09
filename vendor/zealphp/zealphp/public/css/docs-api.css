@@ -1,0 +1,647 @@
+/* ====================================================================
+ * docs-api.css — typography + visual hierarchy for the phpDocumentor
+ * pages served under /docs/api/. Loaded AFTER phpDocumentor's own CSS
+ * so these selectors override theirs.
+ *
+ * Design intent — make code unmistakable from prose:
+ *   - All identifiers (method names, types, params): Fira Code mono.
+ *   - All signatures: dark code-block treatment (NOT inline chips).
+ *   - All descriptions: Instrument Sans, max-width capped for reading.
+ *   - Each method renders as a CARD with: bold mono title, subtle
+ *     source-link, dark signature block, clean params table, clean
+ *     returns block. Stripe / Linear API docs aesthetic.
+ * ==================================================================== */
+
+/* phpDocumentor's hard-coded green palette → CSS variables already
+ * defined globally in zealphp.css. The selectors below target their
+ * specific class names. */
+
+.docs-api {
+  /* Constrain the content column inside our lesson-content shell;
+   * phpDocumentor expects a full-width main area. */
+  max-width: none;
+}
+
+/* ---------- phpDocumentor TOP HEADER — hide it, we have our own nav ---------- */
+.docs-api .phpdocumentor-topnav,
+.docs-api .phpdocumentor-header > a.phpdocumentor-title__link {
+  display: none;
+}
+.docs-api > header.phpdocumentor-header {
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+  padding: 0 0 1rem;
+  margin: 0 0 1.5rem;
+}
+
+/* ---------- LINKS ---------- */
+.docs-api a {
+  color: var(--accent-dark);
+}
+.docs-api a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: rgba(245,158,11,.4);
+}
+
+/* ---------- TITLES & TYPOGRAPHY ---------- */
+.docs-api,
+.docs-api .phpdocumentor-content {
+  font-family: var(--font);
+  color: var(--text);
+}
+.docs-api h1, .docs-api .phpdocumentor-title {
+  color: var(--text);
+  letter-spacing: -.02em;
+  font-weight: 700;
+}
+.docs-api h2 {
+  color: var(--text);
+  border-top: 1px solid var(--border);
+  padding-top: 1.5rem;
+  margin-top: 2.2rem;
+}
+.docs-api h3 {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ---------- COLLAPSIBLE API INDEX (phpdoc sidebar as accordion) ---------- */
+.docs-api-index {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 1.25rem;
+  margin: 1rem 0 1.75rem;
+}
+.docs-api-index > summary {
+  font-weight: 600;
+  font-size: .92rem;
+  color: var(--text-muted);
+  padding: .75rem 0;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.docs-api-index > summary::-webkit-details-marker { display: none; }
+.docs-api-index > summary::before {
+  content: "›";
+  display: inline-block;
+  margin-right: .5rem;
+  color: var(--accent);
+  transition: transform .15s;
+}
+.docs-api-index[open] > summary::before { transform: rotate(90deg); }
+.docs-api-index[open] > summary { border-bottom: 1px solid var(--border); margin-bottom: .75rem; }
+.docs-api-index aside.phpdocumentor-sidebar {
+  background: transparent;
+  border: 0;
+  padding: 0 0 1rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1.5rem;
+}
+
+/* ---------- (legacy block — phpdoc sidebar styling if it ever leaks
+ *  out of the accordion — kept defensive) ---------- */
+.docs-api > aside.phpdocumentor-sidebar {
+  background: var(--bg-alt);
+  border-right: 1px solid var(--border);
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius);
+}
+.docs-api .phpdocumentor-sidebar__category-title {
+  color: var(--text-muted);
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-weight: 700;
+}
+/* phpdoc's "-clean" list modifier (the API tree / table-of-contents
+ * lists) has no backing rule in the bundled template.css, so its items
+ * fall back to default disc bullets — including the empty wrapper <li>
+ * that only holds a nested <ul>, which shows a stray bullet next to
+ * nothing (e.g. on the HaltException page). Strip bullets on -clean
+ * lists; they're meant to be bulletless. */
+.docs-api .phpdocumentor-list.-clean,
+.docs-api .phpdocumentor-list.-clean li {
+  list-style: none;
+}
+.docs-api .phpdocumentor-list a {
+  color: var(--text);
+  padding: .3rem .6rem;
+  border-radius: 4px;
+  display: block;
+  transition: background .12s, color .12s;
+}
+.docs-api .phpdocumentor-list a:hover {
+  background: rgba(245,158,11,.06);
+  color: var(--accent-dark);
+  text-decoration: none;
+}
+
+/* ---------- METHOD / FUNCTION / CONSTANT CARDS ---------- */
+/* Each phpdoc-element renders as a self-contained card with bold mono
+ * title, subtle source link, dark signature block, params + returns.
+ * Real phpdoc class names: .phpdocumentor-element (the wrapper),
+ * .phpdocumentor-element__name (the H4 method title). */
+.docs-api article.phpdocumentor-element {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem 1.4rem 1rem;
+  margin: 1rem 0 1.25rem;
+  scroll-margin-top: 5rem;
+  transition: border-color .15s, box-shadow .15s;
+}
+.docs-api article.phpdocumentor-element:hover {
+  border-color: rgba(245,158,11,.35);
+  box-shadow: 0 4px 18px rgba(245,158,11,.06);
+}
+.docs-api article.phpdocumentor-element.-class {
+  /* The outer class wrapper is a banner, not a method card. Render
+   * flat — its children (constants, properties, methods sections)
+   * each get their own cards. */
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+.docs-api section.phpdocumentor-methods,
+.docs-api section.phpdocumentor-functions,
+.docs-api section.phpdocumentor-constants,
+.docs-api section.phpdocumentor-properties {
+  margin-top: 2.5rem;
+}
+
+/* "Constants" / "Methods" / "Properties" section-level H3 — small caps,
+ * amber-underlined, dominant section header */
+.docs-api .phpdocumentor-elements__header,
+.docs-api section.phpdocumentor-methods > h2,
+.docs-api section.phpdocumentor-functions > h2,
+.docs-api section.phpdocumentor-constants > h2,
+.docs-api section.phpdocumentor-properties > h2 {
+  font-family: var(--font);
+  font-size: .82rem;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--accent-dark);
+  font-weight: 700;
+  padding-bottom: .4rem;
+  border-bottom: 2px solid var(--accent);
+  margin: 2.5rem 0 1rem;
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* Method / function name (h4.phpdocumentor-element__name) — looks
+ * like code, not prose. THIS is the selector that matters. */
+.docs-api .phpdocumentor-element__name,
+.docs-api h4.phpdocumentor-element__name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 1.18rem;
+  color: var(--accent-dark);
+  margin: 0 0 .8rem;
+  letter-spacing: -.01em;
+  border: 0;
+  padding: 0;
+}
+
+/* Content title (the class name banner at the top of the page) */
+.docs-api h2.phpdocumentor-content__title {
+  font-family: var(--font-mono);
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -.02em;
+  border-top: 0;
+  padding-top: 0;
+  margin: 1.5rem 0 .5rem;
+}
+
+/* "Found in App.php : 1728" — subtle inline annotation, NOT a full-
+ * width amber banner. Override phpdoc's default block styling
+ * aggressively. */
+.docs-api aside.phpdocumentor-element-found-in {
+  display: block;
+  background: transparent !important;
+  border: 0 !important;
+  border-left: 0 !important;
+  padding: 0 !important;
+  margin: 0 0 .75rem !important;
+  font-size: .78rem !important;
+  color: var(--text-muted) !important;
+  border-radius: 0 !important;
+  font-family: var(--font-mono);
+}
+.docs-api aside.phpdocumentor-element-found-in a,
+.docs-api .phpdocumentor-element-found-in__file a {
+  color: var(--text-muted);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--border);
+}
+.docs-api aside.phpdocumentor-element-found-in a:hover,
+.docs-api .phpdocumentor-element-found-in__file a:hover {
+  color: var(--accent-dark);
+  border-bottom-color: var(--accent);
+}
+.docs-api .phpdocumentor-element-found-in__line {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ---------- SIGNATURES — modern inline flow, not a heavy slab ---------- */
+/* phpdoc emits <code class="phpdocumentor-code phpdocumentor-signature">
+ * which is inline by default with pre-formatted whitespace from the
+ * source. We render it as a light, flowing monospace line — Stripe /
+ * Mintlify / Linear API docs aesthetic, NOT a 2010 dark-block reference
+ * site. The dark-block reading was overpowering the prose; here the
+ * signature is one tidy line that says exactly what to call, with type
+ * chips, and gets out of the way. */
+.docs-api code.phpdocumentor-signature,
+.docs-api code.phpdocumentor-code,
+.docs-api .phpdocumentor-signature {
+  display: block !important;
+  font-family: var(--font-mono) !important;
+  background: var(--bg-alt) !important;
+  color: var(--text) !important;
+  padding: .7rem 1rem !important;
+  border-radius: 6px !important;
+  font-size: .9rem !important;
+  line-height: 1.55 !important;
+  border: 1px solid var(--border) !important;
+  border-left: 3px solid var(--accent) !important;
+  overflow-x: auto;
+  margin: 0 0 1rem !important;
+  white-space: normal !important;
+  word-spacing: -.1ch;
+}
+/* Tighten the whitespace phpdoc emits between visibility/static/name */
+.docs-api .phpdocumentor-signature > span { white-space: normal; }
+
+/* Hide empty visibility / static spans (phpdoc emits empty <span> for
+ * elements that have no visibility modifier — namespace-level
+ * functions, free-floating constants, etc.). */
+.docs-api .phpdocumentor-signature__visibility:empty,
+.docs-api .phpdocumentor-signature__static:empty {
+  display: none;
+}
+
+/* Visibility (public/private/protected) — small badge instead of inline color text */
+.docs-api .phpdocumentor-signature__visibility {
+  display: inline-block;
+  font-style: normal;
+  font-weight: 600;
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  padding: .1rem .45rem;
+  background: rgba(248,113,113,.1);
+  color: #b91c1c;
+  border: 1px solid rgba(248,113,113,.25);
+  border-radius: 3px;
+  margin-right: .5rem;
+  vertical-align: 1px;
+}
+.docs-api .phpdocumentor-signature__static {
+  display: inline-block;
+  font-style: normal;
+  font-weight: 600;
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  padding: .1rem .45rem;
+  background: rgba(147,197,253,.12);
+  color: #1d4ed8;
+  border: 1px solid rgba(147,197,253,.3);
+  border-radius: 3px;
+  margin-right: .5rem;
+  vertical-align: 1px;
+}
+
+/* Method/function name in the signature — bold amber */
+.docs-api .phpdocumentor-signature__name,
+.docs-api .phpdocumentor-signature a {
+  color: var(--accent-dark);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+/* Return type — sage green chip after the colon */
+.docs-api .phpdocumentor-signature__response_type {
+  display: inline-block;
+  padding: .05rem .4rem;
+  background: rgba(16,185,129,.08);
+  color: #047857;
+  border: 1px solid rgba(16,185,129,.22);
+  border-radius: 3px;
+  font-size: .85em;
+  margin-left: .25rem;
+}
+
+/* Argument types/names/defaults — colored inline, NOT chip (would break the
+ * line into too many pills). Stays in the inline flow of the signature. */
+.docs-api .phpdocumentor-signature__argument__type {
+  color: #2563eb;
+  font-weight: 500;
+}
+.docs-api .phpdocumentor-signature__argument__name {
+  color: #b45309;
+  font-weight: 600;
+}
+.docs-api .phpdocumentor-signature__argument__default-value {
+  color: var(--text-muted);
+}
+.docs-api .phpdocumentor-signature__argument > span {
+  /* tighten inner-arg span spacing — phpdoc puts a stray space before
+   * the closing bracket */
+  margin-right: 0;
+}
+
+/* Inline code in prose (NOT signature blocks). The signature has both
+ * `.phpdocumentor-signature` and `.phpdocumentor-code` classes — exclude
+ * via :not() on the code itself, not the parent. */
+.docs-api code:not(.phpdocumentor-signature):not(.phpdocumentor-code) {
+  font-family: var(--font-mono);
+  background: rgba(245,158,11,.08);
+  border: 1px solid rgba(245,158,11,.18);
+  padding: .1em .4em;
+  border-radius: 4px;
+  color: var(--accent-dark);
+  font-size: .85em;
+  font-weight: 500;
+}
+/* …but block code inside a fenced <pre> is NOT an inline chip — the <pre>
+ * already provides the dark code surface. Strip the chip border/bg/padding
+ * so it doesn't draw a stray amber box inside the dark block. Specificity
+ * (0,3,2) beats the inline rule above (0,3,1). */
+.docs-api pre code:not(.phpdocumentor-signature):not(.phpdocumentor-code) {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  color: inherit;
+}
+
+/* ---------- PARAMETERS + RETURN VALUES blocks ---------- */
+/* phpdoc emits these as <h5 class="phpdocumentor-argument-list__heading">
+ * Parameters</h5> + the rendered param list. Real selectors below. */
+.docs-api .phpdocumentor-argument-list__heading,
+.docs-api .phpdocumentor-return-value__heading,
+.docs-api .phpdocumentor-tag-list__heading,
+.docs-api h5[class*="phpdocumentor-"] {
+  font-family: var(--font);
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .14em;
+  color: var(--text-muted);
+  font-weight: 700;
+  margin: 1.25rem 0 .5rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: .25rem;
+}
+
+/* Each parameter row — phpdoc renders these as:
+ *   <dt class="phpdocumentor-argument-list__entry">
+ *     <span class="phpdocumentor-argument-list__argument__name">$format</span>
+ *     :
+ *     <span class="phpdocumentor-argument-list__argument__type">string|null</span>
+ *   </dt>
+ *   <dd>description...</dd>
+ * Render as a definition list with code-styled name + chip-styled type. */
+.docs-api .phpdocumentor-argument-list__entry,
+.docs-api .phpdocumentor-return-value__entry,
+.docs-api dt.phpdocumentor-table-of-contents__entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .5rem;
+  padding: .55rem 0 .25rem;
+  font-family: var(--font-mono);
+  font-size: .9rem;
+}
+.docs-api dl > dt.phpdocumentor-argument-list__entry + dd,
+.docs-api dl > dt.phpdocumentor-return-value__entry + dd {
+  padding: 0 0 .8rem 0;
+  margin: 0 0 .25rem;
+  border-bottom: 1px dashed rgba(0,0,0,.06);
+  font-family: var(--font);
+  font-size: .9rem;
+  line-height: 1.6;
+  color: var(--text);
+}
+.docs-api dl > dd:last-child { border-bottom: 0; }
+
+.docs-api .phpdocumentor-argument-list__argument__name,
+.docs-api .phpdocumentor-return-value__argument__name {
+  color: var(--accent-dark);
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+/* Type chips in params + return values — same sage-green as signature
+ * return types for visual consistency. */
+.docs-api .phpdocumentor-argument-list__argument__type,
+.docs-api .phpdocumentor-return-value__argument__type,
+.docs-api .phpdocumentor-argument-list__entry > span:nth-of-type(2),
+.docs-api .phpdocumentor-return-value__entry > span:nth-of-type(2) {
+  display: inline-block;
+  padding: .1rem .5rem;
+  background: rgba(16,185,129,.08);
+  border: 1px solid rgba(16,185,129,.22);
+  color: #047857;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: .82rem;
+  font-weight: 500;
+}
+
+/* Legacy: phpdoc-label-line is a different structure used for some
+ * elements; keep a defensive baseline. */
+.docs-api .phpdocumentor-label-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .5rem;
+  padding: .35rem 0;
+  font-family: var(--font-mono);
+  font-size: .88rem;
+}
+.docs-api .phpdocumentor-label-line:empty { display: none; }
+.docs-api .phpdocumentor-label-line code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: #fcd34d;
+  font-weight: 600;
+}
+
+/* Type chips — small pill badges for return types + param types */
+.docs-api .phpdocumentor-tag-link,
+.docs-api .phpdocumentor-tag-link a {
+  display: inline-block;
+  padding: .15rem .55rem;
+  background: rgba(147,197,253,.12);
+  border: 1px solid rgba(147,197,253,.3);
+  color: #2563eb;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: .82rem;
+  font-weight: 500;
+  text-decoration: none;
+  margin-right: .3rem;
+}
+
+/* Summary (one-liner under method title) */
+.docs-api .phpdocumentor-summary {
+  font-family: var(--font);
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1.6;
+  margin: .25rem 0 .75rem;
+  max-width: 70ch;
+}
+
+/* Description (long-form prose) */
+.docs-api .phpdocumentor-description {
+  font-family: var(--font);
+  color: var(--text);
+  font-size: .95rem;
+  line-height: 1.7;
+  margin: .75rem 0;
+  max-width: 75ch;
+}
+.docs-api .phpdocumentor-description p { margin: .5rem 0 .8rem; }
+.docs-api .phpdocumentor-description ul,
+.docs-api .phpdocumentor-description ol { margin: .5rem 0 .8rem; padding-left: 1.5rem; }
+.docs-api .phpdocumentor-description li { margin: .25rem 0; }
+
+/* ---------- TABLES (constant lists, etc.) ---------- */
+.docs-api table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: .88rem;
+}
+.docs-api th, .docs-api td {
+  border-bottom: 1px solid var(--border);
+  padding: .6rem .8rem;
+  text-align: left;
+  vertical-align: top;
+}
+.docs-api th {
+  background: var(--bg-alt);
+  font-weight: 700;
+  color: var(--text);
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--text-muted);
+}
+.docs-api td code {
+  /* code in table cells stays subtle */
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--accent-dark);
+  font-weight: 500;
+}
+
+/* ---------- SEARCH BAR ---------- */
+.docs-api .phpdocumentor-search {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .5rem .75rem;
+  margin-bottom: 1rem;
+}
+.docs-api .phpdocumentor-search input {
+  font-family: var(--font);
+  background: transparent;
+  border: 0;
+  outline: none;
+  width: 100%;
+  color: var(--text);
+}
+
+/* ---------- "Found in" annotations ---------- */
+.docs-api .phpdocumentor-element-found-in {
+  background: rgba(245,158,11,.04);
+  border-left: 3px solid var(--accent);
+  padding: .5rem .75rem;
+  border-radius: 0 4px 4px 0;
+  margin: 1rem 0;
+  font-size: .85rem;
+  color: var(--text-muted);
+}
+.docs-api .phpdocumentor-element-found-in a {
+  color: var(--accent-dark);
+}
+
+/* ---------- "Back to top" floating button ---------- */
+.docs-api .phpdocumentor-back-to-top {
+  background: var(--accent);
+  color: var(--bg);
+  border: 0;
+  border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  box-shadow: 0 4px 14px rgba(245,158,11,.25);
+}
+.docs-api .phpdocumentor-back-to-top:hover {
+  background: var(--accent-dark);
+}
+
+/* ---------- TOC ---------- */
+.docs-api .phpdocumentor-table-of-contents a {
+  color: var(--accent-dark);
+}
+.docs-api .phpdocumentor-table-of-contents__entry {
+  padding: .3rem 0;
+  border-bottom: 1px dashed rgba(0,0,0,.2);
+}
+
+/* ---------- Admonitions (@deprecated / @see notices) ---------- */
+/* phpDocumentor's admonition icon is an inline <svg> with the class on the
+   <svg> itself. It ships at its intrinsic ~800px size; the max-width:3rem cap
+   lives in phpdoc's base.css, which our wrapped pages DON'T load (only
+   template.css + this overlay) — so the @deprecated exclamation rendered
+   enormous. Pin it to a normal inline icon size. */
+.docs-api .phpdocumentor-admonition__icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex-shrink: 0;
+}
+
+/* ---------- Breadcrumbs + the "in package X" title suffix ---------- */
+/* base.css resets the breadcrumb <ul> (list-style:none, no margin/padding) and
+   shrinks the .phpdocumentor-element__package label; it isn't loaded on our
+   wrapped pages, so breadcrumbs showed disc bullets and the in-title
+   "in package X" link inherited the 32px h1 size (looked as big as the title).
+   Normalise both to a small, bullet-free inline row. */
+.docs-api .phpdocumentor-element__package {
+  font-size: .8rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-top: .35rem;
+}
+.docs-api .phpdocumentor-breadcrumbs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  font-size: .8rem;
+}
+.docs-api .phpdocumentor-breadcrumbs > li { display: inline; }
+
+/* ---------- Responsive: phpDocumentor's grid can overflow our shell ---------- */
+@media (max-width: 900px) {
+  .docs-api aside.phpdocumentor-sidebar {
+    width: 100%;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1rem;
+  }
+}

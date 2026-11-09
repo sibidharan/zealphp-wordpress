@@ -1,0 +1,558 @@
+<?php
+namespace ZealPHP\Session\Handler;
+
+/**
+ * Redis-backed session handler for ZealPHP.
+ *
+ * Reads/writes session data using the same key format as PHP's phpredis
+ * session handler (PHPREDIS_SESSION:{session_id}), so sessions created
+ * by Apache/mod_php are readable by ZealPHP and vice versa.
+ *
+ * ## Coroutine safety (issue #16)
+ *
+ * phpredis (`\Redis`) is **not** coroutine-safe: a single connection multiplexed
+ * across concurrent coroutines interleaves request/response frames on the same
+ * socket, so one coroutine can read another's reply (or garbage). Sharing one
+ * handler instance — the common `onWorkerStart` pattern — therefore corrupted
+ * session reads under load, which `write_close()` then persisted (a 24-key
+ * session collapsing to a handful of keys).
+ *
+ * This handler keeps **one connection per coroutine**, stored in the coroutine's
+ * context, so concurrent requests never share a socket. The socket is closed
+ * deterministically via `Coroutine::defer()` when the coroutine ends (issue #438
+ * — relying on context GC leaked one FD per request under HOOK_ALL until
+ * `maxclients` was exhausted; see `conn()`). Outside a coroutine (CLI, tests) it
+ * uses a single lazily-created fallback connection. High-throughput deployments
+ * that want to avoid per-request connection churn should front this with a
+ * connection pool; the per-coroutine model here is correct-by-default.
+ *
+ * Every method requires a live Redis connection, so it is verified against a
+ * real server rather than unit tests — excluded from coverage measurement
+ * (no offline seam without shipping a Redis mock).
+ *
+ * @codeCoverageIgnore
+ */
+class RedisSessionHandler implements \SessionHandlerInterface
+{
+    /**
+     * Redis host (default `'127.0.0.1'`).
+     *
+     * The connection surface (`$host`/`$port`/`$prefix`/`$ttl`/`$auth`/`$fallback`
+     * plus `connect()`/`conn()`) is `protected` rather than `private` so a
+     * subclass can extend how the socket is made — TLS context options, custom
+     * timeouts, `select()`ing a non-zero DB — without reimplementing
+     * `SessionHandlerInterface` and duplicating the 3-way merge (#494). The
+     * merge internals stay private: they are correctness-critical under
+     * coroutine concurrency, not extension points.
+     */
+    protected string $host;
+
+    /** Redis port (default `6379`). */
+    protected int $port;
+
+    /** Key prefix used for session entries (default `'PHPREDIS_SESSION:'`). */
+    protected string $prefix;
+
+    /** Session TTL in seconds (default `1440`). */
+    protected int $ttl;
+
+    /**
+     * Credential sent via `AUTH` on each new connection, or `null` for an
+     * unauthenticated server. A plain string is a `requirepass` password; a
+     * `[user, pass]` pair authenticates as a Redis 6+ ACL user.
+     *
+     * @var string|list<string>|null
+     */
+    protected string|array|null $auth;
+
+    /** Single connection used outside coroutine context (CLI / tests). */
+    protected ?\Redis $fallback = null;
+
+    /**
+     * @param string                  $host   Redis host.
+     * @param int                     $port   Redis port.
+     * @param string                  $prefix Key prefix; use the phpredis default (`'PHPREDIS_SESSION:'`) for cross-handler compatibility.
+     * @param int                     $ttl    Session TTL in seconds.
+     * @param string|list<string>|null $auth  Password for a `requirepass` server, or `[user, pass]`
+     *                                        for a Redis 6+ ACL user. `null` (default) sends no
+     *                                        `AUTH` — required for unauthenticated servers, which
+     *                                        reject an unsolicited `AUTH`. Trailing + defaulted, so
+     *                                        existing 4-argument call sites are unaffected (#494).
+     */
+    public function __construct(
+        string $host = '127.0.0.1',
+        int $port = 6379,
+        string $prefix = 'PHPREDIS_SESSION:',
+        int $ttl = 1440,
+        string|array|null $auth = null
+    ) {
+        $this->host = $host;
+        $this->port = $port;
+        $this->prefix = $prefix;
+        $this->ttl = $ttl;
+        $this->auth = $auth;
+        // #271 — do NOT connect eagerly here. Under HOOK_ALL, `\Redis->connect()`
+        // is a coroutine API, so constructing the handler at a non-coroutine point
+        // (boot / middleware registration — e.g. with `sessionLifecycle(false)`,
+        // where the app installs its own save handler before the request loop)
+        // fataled with "API must be called in the coroutine". The connection is
+        // now established lazily in `redis()` on first use — a per-coroutine socket
+        // inside a request, or the `$fallback` (`??=`) outside one — both of which
+        // are always safe contexts. `$fallback` is already nullable + lazy.
+    }
+
+    /**
+     * The credential to send with `AUTH`, or `null` when the server is
+     * unauthenticated.
+     *
+     * Split out from `connect()` and kept **pure** so the decision is unit-testable
+     * without ext-redis or a live server (`connect()` needs both). Normalises every
+     * "nothing configured" shape — `null`, `''`, `[]`, an array of blanks — to
+     * `null`, because Redis errors on an `AUTH` sent to a server with no
+     * `requirepass`; an unconditional call would break every existing
+     * passwordless deployment (#494).
+     *
+     * @return string|list<string>|null
+     */
+    protected function authCredential(): string|array|null
+    {
+        if ($this->auth === null) {
+            return null;
+        }
+        if (is_string($this->auth)) {
+            return $this->auth !== '' ? $this->auth : null;
+        }
+        // [user, pass] for a Redis 6+ ACL user — drop blank members.
+        $parts = array_values(array_filter(
+            $this->auth,
+            static fn (string $v): bool => $v !== ''
+        ));
+        return $parts !== [] ? $parts : null;
+    }
+
+    /**
+     * Open a new `\Redis` connection to `$this->host:$this->port`, authenticating
+     * when a credential is configured (#494).
+     */
+    protected function connect(): \Redis
+    {
+        $redis = new \Redis();
+        $redis->connect($this->host, $this->port);
+        $credential = $this->authCredential();
+        if ($credential !== null) {
+            // phpredis accepts a password string, or [user, pass] for ACL users.
+            $redis->auth($credential);
+        }
+        return $redis;
+    }
+
+    /**
+     * Resolve the Redis connection for the CURRENT context.
+     *
+     * In a coroutine: a per-coroutine socket stored in the coroutine context
+     * (issue #16 — concurrent coroutines must never share a socket and interleave
+     * RESP frames). Outside a coroutine: the shared `$fallback`. The connection
+     * is established lazily here.
+     *
+     * The per-coroutine socket is closed **deterministically** via
+     * `Coroutine::defer()` (issue #438), NOT by context GC. Under HOOK_ALL the
+     * socket is hooked I/O; once the coroutine has already exited there is no live
+     * coroutine left to drive its hooked `close`, so relying on context teardown
+     * leaked one FD per request (visible as `CLOSE-WAIT` sockets) until the worker
+     * eventually exhausted Redis/Valkey's `maxclients`. The `defer` closure runs
+     * while the coroutine is still alive (just before context teardown), so the
+     * hooked `close()` can yield and the FD is released. Registered exactly once,
+     * on first creation, so a single deferred close fires per coroutine.
+     *
+     * Callers reach this only through `io()`, which guarantees a coroutine is live
+     * before `connect()`'s hooked `\Redis->connect()` runs.
+     */
+    protected function conn(): \Redis
+    {
+        $cid = \OpenSwoole\Coroutine::getCid();
+        if ($cid < 0) {
+            return $this->fallback ??= $this->connect();
+        }
+        $context = \OpenSwoole\Coroutine::getContext($cid);
+        $existing = $context['__zeal_redis_session'] ?? null;
+        if ($existing instanceof \Redis) {
+            return $existing;
+        }
+        $fresh = $this->connect();
+        $context['__zeal_redis_session'] = $fresh;
+        // Close the hooked socket while THIS coroutine is still alive (#438).
+        \OpenSwoole\Coroutine::defer(static function () use ($fresh): void {
+            try {
+                $fresh->close();
+            } catch (\Throwable) {
+                // Socket already gone / never fully opened — nothing to release.
+            }
+        });
+        return $fresh;
+    }
+
+    /**
+     * Run a Redis save-handler operation, guaranteeing it executes inside a
+     * coroutine.
+     *
+     * Every `\Redis` call in this handler — the `connect()` plus
+     * `watch`/`get`/`multi`/`exec`/`del` — is hooked I/O under
+     * `OpenSwoole\Runtime::HOOK_ALL`, so it FATALS with
+     * "API must be called in the coroutine" when the PHP session save-handler
+     * chain fires OUTSIDE a request coroutine. That happens under
+     * `App::superglobals(true)` WITHOUT `enableCoroutine(true)`: the `onRequest`
+     * handler isn't auto-wrapped in a coroutine, yet HOOK_ALL still hooks `\Redis`
+     * — e.g. an app that installs its own save handler via `sessionLifecycle(false)`
+     * and calls `session_start()` from middleware. #271 made the *constructor*
+     * lazy, but `open()`/`read()` are themselves "first use" and still hit the wall
+     * (#285).
+     *
+     * When already in a coroutine, run `$op` directly on the per-coroutine
+     * connection. When NOT, run it inside `Coroutine::run()` on the shared
+     * `$fallback` (the `App::parallel` / #261 sync-mode idiom — `Coroutine::run`
+     * swallows throws, so capture + rethrow to keep a Redis error a catchable
+     * exception, not a worker-killing fatal). `$fallback` persists across these
+     * sequential transient runs, so the connection — and `WATCH` (read) ->
+     * `MULTI`/`EXEC` (write) optimistic locking — spans the whole request.
+     * Validated against a live Redis: a hooked socket created in one
+     * `Coroutine::run()` is reused, with `WATCH`/`MULTI`/`EXEC` intact, in later
+     * runs. (In this no-request-coroutine mode a worker handles requests
+     * sequentially, so there is no concurrent writer for the lock to guard anyway.)
+     *
+     * @param callable(\Redis): mixed $op
+     */
+    private function io(callable $op): mixed
+    {
+        if (\OpenSwoole\Coroutine::getCid() >= 0) {
+            return $op($this->conn());
+        }
+        $result = null;
+        $error  = null;
+        \OpenSwoole\Coroutine::run(function () use ($op, &$result, &$error): void {
+            try {
+                if ($this->fallback === null) {
+                    $this->fallback = $this->connect();
+                }
+                $result = $op($this->fallback);
+            } catch (\Throwable $e) {
+                $error = $e;
+            }
+        });
+        if ($error !== null) {
+            throw $error;
+        }
+        return $result;
+    }
+
+    /**
+     * Verify that the Redis connection is alive. Called by PHP's session manager
+     * before the first `read()`.
+     */
+    public function open($savePath, $sessionName): bool
+    {
+        return $this->io(static fn(\Redis $r): bool => $r->isConnected()) === true;
+    }
+
+    /**
+     * No-op: the per-coroutine connection is closed by the `Coroutine::defer()`
+     * registered in `conn()` (#438), not by the session-manager lifecycle.
+     *
+     * `close()` deliberately does NOT close the socket: PHP can call the
+     * save-handler `close` more than once per coroutine (every
+     * `session_write_close()`), and the socket is shared across all session
+     * operations in the request — closing it here would break a later
+     * `read()`/`write()` on the same coroutine. The deferred close fires exactly
+     * once, when the coroutine ends.
+     */
+    public function close(): bool
+    {
+        // Drop this request's read snapshots (the socket stays — see above).
+        $cid = \OpenSwoole\Coroutine::getCid();
+        if ($cid >= 0) {
+            $ctx = \OpenSwoole\Coroutine::getContext($cid);
+            if ($ctx !== null) {
+                unset($ctx[self::CTX_BASE]);
+            }
+        } else {
+            $this->baseData = [];
+        }
+        return true;
+    }
+
+    /**
+     * Read snapshots (session id => data) used OUTSIDE a coroutine only. In a
+     * coroutine the snapshot lives in the coroutine's context and goes away
+     * with it. This used to be one per-worker map for everything: an id that
+     * was read but never written (rotated by strict mode, a forged cookie, a
+     * read-only request) stayed in it for the worker's lifetime, so a client
+     * cycling cookies grew it without bound. Capped all the same.
+     *
+     * @var array<string, string>
+     */
+    private array $baseData = [];
+
+    /** Cap on `$baseData` (non-coroutine use is one request at a time). */
+    private const BASE_DATA_MAX = 64;
+
+    /** Coroutine-context slot holding that coroutine's read snapshots. */
+    private const CTX_BASE = '__zeal_redis_session_base';
+
+    /**
+     * Remember the data `read()` saw for `$sid` (the 3-way merge base).
+     * `$cid` is the CALLER's coroutine id, taken before io() — io() may run
+     * the operation in a transient coroutine of its own.
+     */
+    private function setBase(int $cid, string $sid, string $data): void
+    {
+        if ($cid >= 0) {
+            $ctx = \OpenSwoole\Coroutine::getContext($cid);
+            if ($ctx !== null) {
+                $map = $ctx[self::CTX_BASE] ?? [];
+                $map = is_array($map) ? $map : [];
+                $map[$sid] = $data;
+                $ctx[self::CTX_BASE] = $map;
+                return;
+            }
+        }
+        unset($this->baseData[$sid]);
+        if (count($this->baseData) >= self::BASE_DATA_MAX) {
+            array_shift($this->baseData);
+        }
+        $this->baseData[$sid] = $data;
+    }
+
+    private function getBase(int $cid, string $sid): ?string
+    {
+        if ($cid >= 0) {
+            $ctx = \OpenSwoole\Coroutine::getContext($cid);
+            if ($ctx !== null) {
+                $map = $ctx[self::CTX_BASE] ?? [];
+                $v = is_array($map) ? ($map[$sid] ?? null) : null;
+                return is_string($v) ? $v : null;
+            }
+        }
+        return $this->baseData[$sid] ?? null;
+    }
+
+    private function dropBase(int $cid, string $sid): void
+    {
+        if ($cid >= 0) {
+            $ctx = \OpenSwoole\Coroutine::getContext($cid);
+            if ($ctx !== null) {
+                $map = $ctx[self::CTX_BASE] ?? [];
+                if (is_array($map)) {
+                    unset($map[$sid]);
+                    $ctx[self::CTX_BASE] = $map;
+                }
+                return;
+            }
+        }
+        unset($this->baseData[$sid]);
+    }
+
+    /**
+     * Read and return the serialised session data for `$sessionId`.
+     *
+     * Also `WATCH`es the key so a concurrent write is detected during the
+     * subsequent `write()` call; stores the baseline data (per coroutine) for
+     * the 3-way merge.
+     */
+    public function read($sessionId): string
+    {
+        $key = $this->prefix . $sessionId;
+        $sid = (string) $sessionId;
+        $cid = \ZealPHP\RequestContext::ownerCid();
+        $out = $this->io(function (\Redis $redis) use ($key, $sid, $cid): string {
+            // Sliding expiry, like PHP's own session.lazy_write timestamp
+            // update: a session that is read but not changed stays alive. Only
+            // once less than half the TTL is left: an EXPIRE is a modification,
+            // so refreshing on every read would abort the WATCH of every
+            // concurrent request on the same session (parallel ajax). And
+            // BEFORE our own WATCH, for the same reason.
+            $left = $redis->ttl($key);
+            if (is_int($left) && $left >= 0 && $left < intdiv($this->ttl, 2)) {
+                $redis->expire($key, $this->ttl);
+            }
+            $redis->watch($key);
+            $data = $redis->get($key);
+            $base = is_string($data) ? $data : '';
+            $this->setBase($cid, $sid, $base);
+            return $base;
+        });
+        return is_string($out) ? $out : '';
+    }
+
+    /**
+     * Persist serialised session data for `$sessionId` with optimistic locking.
+     *
+     * Uses `WATCH`/`MULTI`/`EXEC` and retries up to 3 times on conflict. When
+     * a concurrent writer is detected, performs a 3-way merge (base = original
+     * `read()` snapshot, local = intended write, remote = current Redis value)
+     * before retrying. Returns `false` if all 3 attempts fail.
+     */
+    public function write($sessionId, $sessionData): bool
+    {
+        $key = $this->prefix . $sessionId;
+        $sid = (string) $sessionId;
+        $cid = \ZealPHP\RequestContext::ownerCid();
+        return $this->io(function (\Redis $redis) use ($key, $sid, $sessionData, $cid): bool {
+            for ($attempt = 0; $attempt < 3; $attempt++) {
+                $pipe = $redis->multi();
+                $pipe->setex($key, $this->ttl, $sessionData);
+                $result = $pipe->exec();
+                if ($result !== false) {
+                    // The read→write merge baseline is consumed.
+                    $this->dropBase($cid, $sid);
+                    return true;
+                }
+
+                // WATCH/MULTI conflict — concurrent writer beat us. Re-WATCH,
+                // read the current state, 3-way merge (base = our original
+                // read, local = our intended write, remote = current). Retry.
+                $redis->watch($key);
+                $remote = $redis->get($key);
+                $remoteStr = is_string($remote) ? $remote : '';
+                $base = $this->getBase($cid, $sid) ?? '';
+                if ($base !== '' && $remoteStr === '') {
+                    // The key we read with data is gone: the session was
+                    // destroyed (logout) or rotated after our read. SETEX
+                    // would recreate it from our stale copy — refuse; the
+                    // session layer re-reads and drops the write.
+                    $redis->unwatch();
+                    $this->dropBase($cid, $sid);
+                    return false;
+                }
+                $sessionData = $this->merge3Sessions($base, $sessionData, $remoteStr);
+                $this->setBase($cid, $sid, $remoteStr);
+            }
+            $this->dropBase($cid, $sid); // bound the map even when all retries fail
+            return false;
+        }) === true;
+    }
+
+    /**
+     * 3-way merge for serialised PHP session strings.
+     *
+     * Gives leaf-level granularity — concurrent writes to disjoint leaf
+     * paths under the same top-level key (e.g. `$_SESSION['cart']['item1']`
+     * vs `$_SESSION['cart']['item2']`) both survive.
+     */
+    private function merge3Sessions(string $base, string $local, string $remote): string
+    {
+        $baseArr = self::parseSession($base);
+        $localArr = self::parseSession($local);
+        $remoteArr = self::parseSession($remote);
+        $merged = self::merge3Array($baseArr, $localArr, $remoteArr);
+        return self::serializeSession($merged);
+    }
+
+    /**
+     * Parse a PHP session-encoded string into a key→value array.
+     *
+     * Uses the `php` serialisation format (`key|serialized_value`). A
+     * malformed session decodes to `[]` as a whole. Only `stdClass` objects are
+     * allowed in `unserialize()` (matches the whitelist in `src/Session/utils.php`).
+     *
+     * @return array<mixed,mixed>
+     */
+    public static function parseSession(string $data): array
+    {
+        // The session layer's decoder: an undecodable session is empty, never
+        // partially parsed (see php_session_decode_to_array()).
+        return $data === '' ? [] : \ZealPHP\Session\php_session_decode_to_array($data);
+    }
+
+    /**
+     * Serialise a key→value array back to the PHP session-encoded string format.
+     *
+     * @param array<mixed,mixed> $data
+     */
+    public static function serializeSession(array $data): string
+    {
+        /** @var array<string, mixed> $data */
+        return \ZealPHP\Session\php_session_encode_from_array($data);
+    }
+
+    /**
+     * Recursive 3-way array merge.
+     *
+     * Strategy: remote is the baseline result; for each key in local:
+     * - If the key is new in local (not in base), add it to the result.
+     * - If both local and remote are arrays, recurse.
+     * - If local changed from base, local wins.
+     * Keys deleted locally (present in base, absent in local) are removed from
+     * the result only when the remote value is still the base value (i.e. nobody
+     * else changed it).
+     *
+     * @param array<mixed,mixed> $base
+     * @param array<mixed,mixed> $local
+     * @param array<mixed,mixed> $remote
+     * @return array<mixed,mixed>
+     */
+    public static function merge3Array(array $base, array $local, array $remote): array
+    {
+        $result = $remote;
+        foreach ($local as $key => $val) {
+            $baseHas = array_key_exists($key, $base);
+            if (!$baseHas) {
+                $result[$key] = $val;
+                continue;
+            }
+            $baseVal = $base[$key];
+            $remoteVal = $remote[$key] ?? null;
+            if (is_array($val) && is_array($baseVal) && is_array($remoteVal)) {
+                $result[$key] = self::merge3Array($baseVal, $val, $remoteVal);
+                continue;
+            }
+            if ($val !== $baseVal) {
+                $result[$key] = $val;
+            }
+        }
+        foreach ($base as $key => $_) {
+            if (!array_key_exists($key, $local) && array_key_exists($key, $remote)) {
+                if ($remote[$key] === $base[$key]) unset($result[$key]);
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * Delete the session key from Redis and return `true`.
+     */
+    public function destroy($sessionId): bool
+    {
+        $key = $this->prefix . $sessionId;
+        $sid = (string) $sessionId;
+        $cid = \ZealPHP\RequestContext::ownerCid();
+        return $this->io(function (\Redis $redis) use ($key, $sid, $cid): bool {
+            $redis->del($key);
+            $this->dropBase($cid, $sid);
+            return true;
+        }) === true;
+    }
+
+    /**
+     * Garbage collection — Redis TTL handles expiry server-side, so this is a no-op.
+     *
+     * Returns `0` (zero sessions collected) to satisfy the `SessionHandlerInterface` contract.
+     */
+    public function gc($maxlifetime): int|false
+    {
+        return 0;
+    }
+
+    /**
+     * Expose the Redis connection for the current coroutine (or the fallback).
+     *
+     * Useful for inspecting connection state in tests or running additional
+     * Redis commands in the same per-coroutine socket.
+     */
+    public function getRedis(): \Redis
+    {
+        $conn = $this->io(static fn(\Redis $r): \Redis => $r);
+        if (!$conn instanceof \Redis) {
+            throw new \RuntimeException('RedisSessionHandler: Redis connection unavailable.');
+        }
+        return $conn;
+    }
+}
